@@ -1,0 +1,353 @@
+"""ConstructClaw -- Daily Reports domain module.
+
+Daily field reports: labor, materials, weather, delays.
+10 actions exported via ACTIONS dict.
+"""
+import os
+import sys
+import uuid
+from datetime import date as _date
+from decimal import Decimal, ROUND_HALF_UP
+
+sys.path.insert(0, os.path.expanduser("~/.openclaw/erpclaw/lib"))
+from erpclaw_lib.naming import get_next_name, register_prefix
+from erpclaw_lib.response import ok, err, row_to_dict
+from erpclaw_lib.audit import audit
+
+SKILL = "constructclaw"
+
+register_prefix("constructclaw_daily_report", "CCDR-")
+
+VALID_REPORT_STATUSES = ("draft", "submitted", "approved")
+
+
+def _d(val, default="0"):
+    if val is None:
+        return Decimal(default)
+    return Decimal(str(val))
+
+
+# ---------------------------------------------------------------------------
+# add-daily-report
+# ---------------------------------------------------------------------------
+def add_daily_report(conn, args):
+    if not getattr(args, "company_id", None):
+        err("--company-id is required")
+    job_id = getattr(args, "job_id", None)
+    if not job_id:
+        err("--job-id is required")
+
+    if not conn.execute("SELECT id FROM constructclaw_job WHERE id = ?", (job_id,)).fetchone():
+        err(f"Job {job_id} not found")
+
+    dr_id = str(uuid.uuid4())
+    ns = get_next_name(conn, "constructclaw_daily_report", company_id=args.company_id)
+
+    conn.execute(
+        """INSERT INTO constructclaw_daily_report
+           (id, naming_series, job_id, report_date, superintendent, weather,
+            temperature_high, temperature_low, work_description, delays,
+            visitors, notes, company_id)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (
+            dr_id, ns, job_id,
+            getattr(args, "report_date", None) or _date.today().isoformat(),
+            getattr(args, "superintendent", None),
+            getattr(args, "weather", None),
+            getattr(args, "temperature_high", None),
+            getattr(args, "temperature_low", None),
+            getattr(args, "work_description", None),
+            getattr(args, "delays", None),
+            getattr(args, "visitors", None),
+            getattr(args, "notes", None),
+            args.company_id,
+        ),
+    )
+    audit(conn, SKILL, "construction-add-daily-report", "constructclaw_daily_report", dr_id,
+          new_values={"naming_series": ns, "job_id": job_id})
+    conn.commit()
+    ok({"daily_report_id": dr_id, "naming_series": ns, "job_id": job_id,
+        "report_status": "draft"})
+
+
+# ---------------------------------------------------------------------------
+# update-daily-report
+# ---------------------------------------------------------------------------
+def update_daily_report(conn, args):
+    dr_id = getattr(args, "daily_report_id", None)
+    if not dr_id:
+        err("--daily-report-id is required")
+    row = conn.execute("SELECT * FROM constructclaw_daily_report WHERE id = ?", (dr_id,)).fetchone()
+    if not row:
+        err(f"Daily report {dr_id} not found")
+    if row["report_status"] != "draft":
+        err(f"Daily report must be in draft status to update (current: {row['report_status']})")
+
+    updates, params, changed = [], [], []
+    for field, attr in [
+        ("report_date", "report_date"), ("superintendent", "superintendent"),
+        ("weather", "weather"), ("temperature_high", "temperature_high"),
+        ("temperature_low", "temperature_low"), ("work_description", "work_description"),
+        ("delays", "delays"), ("visitors", "visitors"), ("notes", "notes"),
+    ]:
+        val = getattr(args, attr, None)
+        if val is not None:
+            updates.append(f"{field} = ?")
+            params.append(val)
+            changed.append(field)
+
+    if not changed:
+        err("No fields to update")
+
+    updates.append("updated_at = datetime('now')")
+    params.append(dr_id)
+    conn.execute(
+        f"UPDATE constructclaw_daily_report SET {', '.join(updates)} WHERE id = ?", params
+    )
+    audit(conn, SKILL, "construction-update-daily-report", "constructclaw_daily_report", dr_id,
+          new_values={"updated_fields": changed})
+    conn.commit()
+    ok({"daily_report_id": dr_id, "updated_fields": changed})
+
+
+# ---------------------------------------------------------------------------
+# get-daily-report
+# ---------------------------------------------------------------------------
+def get_daily_report(conn, args):
+    dr_id = getattr(args, "daily_report_id", None)
+    if not dr_id:
+        err("--daily-report-id is required")
+    row = conn.execute("SELECT * FROM constructclaw_daily_report WHERE id = ?", (dr_id,)).fetchone()
+    if not row:
+        err(f"Daily report {dr_id} not found")
+
+    data = row_to_dict(row)
+
+    # Attach labor entries
+    labor = conn.execute(
+        "SELECT * FROM constructclaw_daily_labor WHERE daily_report_id = ? ORDER BY created_at",
+        (dr_id,),
+    ).fetchall()
+    data["labor_entries"] = [row_to_dict(l) for l in labor]
+
+    # Attach material deliveries
+    materials = conn.execute(
+        "SELECT * FROM constructclaw_daily_material WHERE daily_report_id = ? ORDER BY created_at",
+        (dr_id,),
+    ).fetchall()
+    data["material_entries"] = [row_to_dict(m) for m in materials]
+
+    ok(data)
+
+
+# ---------------------------------------------------------------------------
+# list-daily-reports
+# ---------------------------------------------------------------------------
+def list_daily_reports(conn, args):
+    conditions, params = [], []
+    cid = getattr(args, "company_id", None)
+    if cid:
+        conditions.append("company_id = ?")
+        params.append(cid)
+    job_id = getattr(args, "job_id", None)
+    if job_id:
+        conditions.append("job_id = ?")
+        params.append(job_id)
+    rs = getattr(args, "report_status", None)
+    if rs:
+        conditions.append("report_status = ?")
+        params.append(rs)
+    search = getattr(args, "search", None)
+    if search:
+        conditions.append("(superintendent LIKE ? OR work_description LIKE ? OR notes LIKE ?)")
+        params.extend([f"%{search}%"] * 3)
+
+    where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+    limit = getattr(args, "limit", 50) or 50
+    offset = getattr(args, "offset", 0) or 0
+
+    total = conn.execute(f"SELECT COUNT(*) as cnt FROM constructclaw_daily_report {where}", params).fetchone()["cnt"]
+    rows = conn.execute(
+        f"SELECT * FROM constructclaw_daily_report {where} ORDER BY report_date DESC LIMIT ? OFFSET ?",
+        params + [limit, offset],
+    ).fetchall()
+    ok({"daily_reports": [row_to_dict(r) for r in rows], "total_count": total,
+        "limit": limit, "offset": offset})
+
+
+# ---------------------------------------------------------------------------
+# submit-daily-report
+# ---------------------------------------------------------------------------
+def submit_daily_report(conn, args):
+    dr_id = getattr(args, "daily_report_id", None)
+    if not dr_id:
+        err("--daily-report-id is required")
+    row = conn.execute("SELECT * FROM constructclaw_daily_report WHERE id = ?", (dr_id,)).fetchone()
+    if not row:
+        err(f"Daily report {dr_id} not found")
+    if row["report_status"] != "draft":
+        err(f"Daily report must be in draft status to submit (current: {row['report_status']})")
+
+    conn.execute(
+        "UPDATE constructclaw_daily_report SET report_status = 'submitted', updated_at = datetime('now') WHERE id = ?",
+        (dr_id,),
+    )
+    audit(conn, SKILL, "construction-submit-daily-report", "constructclaw_daily_report", dr_id,
+          new_values={"report_status": "submitted"})
+    conn.commit()
+    ok({"daily_report_id": dr_id, "report_status": "submitted"})
+
+
+# ---------------------------------------------------------------------------
+# add-daily-labor
+# ---------------------------------------------------------------------------
+def add_daily_labor(conn, args):
+    if not getattr(args, "company_id", None):
+        err("--company-id is required")
+    dr_id = getattr(args, "daily_report_id", None)
+    if not dr_id:
+        err("--daily-report-id is required")
+    if not getattr(args, "trade", None):
+        err("--trade is required")
+
+    if not conn.execute("SELECT id FROM constructclaw_daily_report WHERE id = ?", (dr_id,)).fetchone():
+        err(f"Daily report {dr_id} not found")
+
+    lab_id = str(uuid.uuid4())
+    conn.execute(
+        """INSERT INTO constructclaw_daily_labor
+           (id, daily_report_id, trade, headcount, hours, description, company_id)
+           VALUES (?,?,?,?,?,?,?)""",
+        (
+            lab_id, dr_id,
+            args.trade,
+            int(getattr(args, "headcount", None) or 0),
+            getattr(args, "hours", None) or "0",
+            getattr(args, "description", None),
+            args.company_id,
+        ),
+    )
+    conn.commit()
+    ok({"daily_labor_id": lab_id, "daily_report_id": dr_id, "trade": args.trade})
+
+
+# ---------------------------------------------------------------------------
+# list-daily-labor
+# ---------------------------------------------------------------------------
+def list_daily_labor(conn, args):
+    dr_id = getattr(args, "daily_report_id", None)
+    if not dr_id:
+        err("--daily-report-id is required")
+
+    rows = conn.execute(
+        "SELECT * FROM constructclaw_daily_labor WHERE daily_report_id = ? ORDER BY created_at",
+        (dr_id,),
+    ).fetchall()
+    ok({"daily_labor": [row_to_dict(r) for r in rows], "total_count": len(rows)})
+
+
+# ---------------------------------------------------------------------------
+# add-daily-material
+# ---------------------------------------------------------------------------
+def add_daily_material(conn, args):
+    if not getattr(args, "company_id", None):
+        err("--company-id is required")
+    dr_id = getattr(args, "daily_report_id", None)
+    if not dr_id:
+        err("--daily-report-id is required")
+    if not getattr(args, "material_name", None):
+        err("--material-name is required")
+
+    if not conn.execute("SELECT id FROM constructclaw_daily_report WHERE id = ?", (dr_id,)).fetchone():
+        err(f"Daily report {dr_id} not found")
+
+    mat_id = str(uuid.uuid4())
+    conn.execute(
+        """INSERT INTO constructclaw_daily_material
+           (id, daily_report_id, material_name, quantity, unit, supplier, delivery_ticket, company_id)
+           VALUES (?,?,?,?,?,?,?,?)""",
+        (
+            mat_id, dr_id,
+            args.material_name,
+            getattr(args, "quantity", None) or "0",
+            getattr(args, "unit", None) or "ea",
+            getattr(args, "supplier", None),
+            getattr(args, "delivery_ticket", None),
+            args.company_id,
+        ),
+    )
+    conn.commit()
+    ok({"daily_material_id": mat_id, "daily_report_id": dr_id,
+        "material_name": args.material_name})
+
+
+# ---------------------------------------------------------------------------
+# list-daily-materials
+# ---------------------------------------------------------------------------
+def list_daily_materials(conn, args):
+    dr_id = getattr(args, "daily_report_id", None)
+    if not dr_id:
+        err("--daily-report-id is required")
+
+    rows = conn.execute(
+        "SELECT * FROM constructclaw_daily_material WHERE daily_report_id = ? ORDER BY created_at",
+        (dr_id,),
+    ).fetchall()
+    ok({"daily_materials": [row_to_dict(r) for r in rows], "total_count": len(rows)})
+
+
+# ---------------------------------------------------------------------------
+# daily-summary
+# ---------------------------------------------------------------------------
+def daily_summary(conn, args):
+    job_id = getattr(args, "job_id", None)
+    if not job_id:
+        err("--job-id is required")
+
+    reports = conn.execute(
+        "SELECT * FROM constructclaw_daily_report WHERE job_id = ? ORDER BY report_date DESC",
+        (job_id,),
+    ).fetchall()
+
+    total_labor_hours = Decimal("0")
+    total_headcount = 0
+    total_material_deliveries = 0
+
+    for r in reports:
+        labor = conn.execute(
+            "SELECT COALESCE(SUM(CAST(hours AS REAL)), 0) as total_hours, COALESCE(SUM(headcount), 0) as total_hc FROM constructclaw_daily_labor WHERE daily_report_id = ?",
+            (r["id"],),
+        ).fetchone()
+        total_labor_hours += _d(labor["total_hours"])
+        total_headcount += labor["total_hc"]
+
+        mat_count = conn.execute(
+            "SELECT COUNT(*) as cnt FROM constructclaw_daily_material WHERE daily_report_id = ?",
+            (r["id"],),
+        ).fetchone()["cnt"]
+        total_material_deliveries += mat_count
+
+    ok({
+        "job_id": job_id,
+        "total_reports": len(reports),
+        "total_labor_hours": str(total_labor_hours.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)),
+        "total_headcount": total_headcount,
+        "total_material_deliveries": total_material_deliveries,
+    })
+
+
+# ---------------------------------------------------------------------------
+# ACTIONS registry
+# ---------------------------------------------------------------------------
+ACTIONS = {
+    "construction-add-daily-report": add_daily_report,
+    "construction-update-daily-report": update_daily_report,
+    "construction-get-daily-report": get_daily_report,
+    "construction-list-daily-reports": list_daily_reports,
+    "construction-submit-daily-report": submit_daily_report,
+    "construction-add-daily-labor": add_daily_labor,
+    "construction-list-daily-labor": list_daily_labor,
+    "construction-add-daily-material": add_daily_material,
+    "construction-list-daily-materials": list_daily_materials,
+    "construction-daily-summary": daily_summary,
+}
