@@ -265,6 +265,76 @@ def add_cost_code(conn, args):
 
 
 # ---------------------------------------------------------------------------
+# batch-add-cost-codes
+# ---------------------------------------------------------------------------
+def batch_add_cost_codes(conn, args):
+    """Create multiple cost codes for a job in a single transaction.
+
+    Required: --company-id, --job-id, --codes-json (JSON array of objects)
+    Each object: {"code": "01-100", "description": "...", "category": "labor", "budget_amount": "5000", "budget_hours": "100"}
+    """
+    import json as _json
+
+    if not getattr(args, "company_id", None):
+        err("--company-id is required")
+    job_id = getattr(args, "job_id", None)
+    if not job_id:
+        err("--job-id is required")
+    codes_json = getattr(args, "codes_json", None)
+    if not codes_json:
+        err("--codes-json is required (JSON array of cost code objects)")
+
+    if not conn.execute("SELECT id FROM constructclaw_job WHERE id = ?", (job_id,)).fetchone():
+        err(f"Job {job_id} not found")
+
+    try:
+        codes_list = _json.loads(codes_json) if isinstance(codes_json, str) else codes_json
+    except (TypeError, _json.JSONDecodeError) as e:
+        err(f"Invalid JSON for --codes-json: {e}")
+
+    if not isinstance(codes_list, list) or len(codes_list) == 0:
+        err("--codes-json must be a non-empty JSON array")
+
+    created = []
+    for idx, item in enumerate(codes_list):
+        code = item.get("code")
+        if not code:
+            err(f"Cost code at index {idx} missing 'code' field")
+
+        existing = conn.execute(
+            "SELECT id FROM constructclaw_cost_code WHERE job_id = ? AND code = ?",
+            (job_id, code),
+        ).fetchone()
+        if existing:
+            err(f"Cost code {code} already exists for this job")
+
+        category = item.get("category", "labor")
+        if category not in VALID_COST_CATEGORIES:
+            err(f"Invalid category '{category}' for cost code {code}")
+
+        cc_id = str(uuid.uuid4())
+        conn.execute(
+            """INSERT INTO constructclaw_cost_code
+               (id, job_id, code, description, category, budget_amount, budget_hours, company_id)
+               VALUES (?,?,?,?,?,?,?,?)""",
+            (
+                cc_id, job_id, code,
+                item.get("description"),
+                category,
+                item.get("budget_amount", "0"),
+                item.get("budget_hours", "0"),
+                args.company_id,
+            ),
+        )
+        created.append({"cost_code_id": cc_id, "code": code, "category": category})
+
+    audit(conn, SKILL, "construction-batch-add-cost-codes", "constructclaw_cost_code", job_id,
+          new_values={"count": len(created)})
+    conn.commit()
+    ok({"job_id": job_id, "created_count": len(created), "cost_codes": created})
+
+
+# ---------------------------------------------------------------------------
 # list-cost-codes
 # ---------------------------------------------------------------------------
 def list_cost_codes(conn, args):
@@ -701,6 +771,7 @@ ACTIONS = {
     "construction-get-job": get_job,
     "construction-list-jobs": list_jobs,
     "construction-add-cost-code": add_cost_code,
+    "construction-batch-add-cost-codes": batch_add_cost_codes,
     "construction-list-cost-codes": list_cost_codes,
     "construction-add-cost-entry": add_cost_entry,
     "construction-list-cost-entries": list_cost_entries,

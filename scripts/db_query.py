@@ -96,6 +96,7 @@ def main():
     parser.add_argument("--budget-amount")
     parser.add_argument("--budget-hours")
     parser.add_argument("--cost-code-id")
+    parser.add_argument("--codes-json")
 
     # -- Cost Entries --
     parser.add_argument("--entry-date")
