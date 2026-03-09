@@ -2,12 +2,12 @@
 name: constructclaw
 version: 1.0.0
 description: Construction Project Management -- job costing, estimating, subcontractors, AIA billing, safety, project controls
-author: avansaber
-homepage: https://www.erpclaw.ai
+author: AvanSaber
+homepage: https://github.com/avansaber/constructclaw
 source: https://github.com/avansaber/constructclaw
 tier: 3
 category: construction
-requires: [erpclaw-setup]
+requires: [erpclaw]
 database: ~/.openclaw/erpclaw/data.sqlite
 user-invocable: true
 tags: [erpclaw, construction, job-costing, estimating, subcontractors, billing, safety, rfi, change-orders, earned-value]
@@ -24,7 +24,7 @@ All data is stored in the shared ERPClaw database.
 ## Security Model
 
 - **Local-only**: All data stored in `~/.openclaw/erpclaw/data.sqlite`
-- **No credentials required**: Uses erpclaw_lib shared library (installed by erpclaw-setup)
+- **No credentials required**: Uses erpclaw_lib shared library (installed by erpclaw)
 - **SQL injection safe**: All queries use parameterized statements
 - **Zero network calls**: No external API calls in any code path
 
@@ -97,7 +97,7 @@ python3 {baseDir}/scripts/db_query.py --action status
 | `construction-list-lien-waivers` | | `--subcontract-id --company-id` |
 | `construction-subcontractor-aging-report` | `--company-id` | |
 
-### Billing & Retention (13 actions)
+### Billing & Retention (14 actions)
 | Action | Required Flags | Optional Flags |
 |--------|---------------|----------------|
 | `construction-add-schedule-of-values` | `--company-id --job-id --name` | `--total-contract --notes` |
@@ -109,6 +109,7 @@ python3 {baseDir}/scripts/db_query.py --action status
 | `construction-get-progress-bill` | `--progress-bill-id` | |
 | `construction-list-progress-bills` | | `--company-id --job-id --bill-status` |
 | `construction-submit-progress-bill` | `--progress-bill-id` | |
+| `construction-approve-progress-bill` | `--progress-bill-id` | |
 | `construction-add-retention` | `--company-id --job-id` | `--subcontract-id --retention-type --amount-held --notes` |
 | `construction-list-retentions` | | `--job-id --company-id --retention-status` |
 | `construction-release-retention` | `--retention-id` | `--release-amount` |
@@ -121,7 +122,7 @@ See Tier 2 documentation for full flag details on these modules.
 ## Key Concepts (Tier 2)
 
 - **Job Costing**: Track budget vs actual vs committed costs by cost code (WBS). Cost codes are unique per job.
-- **AIA Billing**: G702/G703 format: Schedule of Values -> Progress Bills with line-by-line completion tracking.
+- **AIA Billing**: G702/G703 format: Schedule of Values -> Progress Bills with line-by-line completion tracking. Approving a progress bill auto-creates a sales invoice via cross_skill integration (requires erpclaw-selling).
 - **Retention**: Typically 10% held until substantial completion. Partial or full release supported.
 - **Change Orders**: PCO (potential) -> CCO (contract). Approved PCOs auto-create CCOs with contract impact.
 - **Earned Value**: CPI (cost efficiency), SPI (schedule efficiency), EAC/ETC forecasting, TCPI.

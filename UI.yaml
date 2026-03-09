@@ -1,0 +1,148 @@
+ocui_version: "1.0"
+skill: constructclaw
+skill_version: "1.0.0"
+display_name: Construction Management
+icon: hard-hat
+color: "#d97706"
+default_entity: job
+
+domains:
+  - key: jobs
+    label: Jobs & Costing
+    entities: [job, cost_code, cost_entry, commitment]
+  - key: estimating
+    label: Estimating
+    entities: [estimate, estimate_line, bid]
+  - key: subcontractors
+    label: Subcontractors
+    entities: [subcontract, subcontract_line, pay_application, lien_waiver]
+  - key: billing
+    label: Billing & Retention
+    entities: [schedule_of_values, sov_line, progress_bill, retention]
+  - key: daily
+    label: Daily Reports
+    entities: [daily_report, daily_labor, daily_material]
+  - key: changes
+    label: Change Orders
+    entities: [pco, cco]
+  - key: rfis
+    label: RFIs & Submittals
+    entities: [rfi, submittal]
+  - key: safety
+    label: Safety
+    entities: [incident, toolbox_talk, safety_cert]
+  - key: controls
+    label: Project Controls
+    entities: [earned_value]
+
+dashboard:
+  kpis:
+    - key: active_jobs
+      label: "Active Jobs"
+      type: count
+      action: construction-list-jobs
+      filter: { job-status: active }
+      severity: success
+      icon: hard-hat
+      drill_action: construction-list-jobs
+      drill_filter: { job-status: active }
+    - key: open_estimates
+      label: "Open Estimates"
+      type: count
+      action: construction-list-estimates
+      filter: { estimate-status: draft }
+      severity: info
+      icon: calculator
+      drill_action: construction-list-estimates
+      drill_filter: { estimate-status: draft }
+    - key: pending_pay_apps
+      label: "Pending Pay Apps"
+      type: count
+      action: construction-list-pay-applications
+      filter: { pay-app-status: submitted }
+      severity: warning
+      icon: file-text
+      drill_action: construction-list-pay-applications
+      drill_filter: { pay-app-status: submitted }
+    - key: open_rfis
+      label: "Open RFIs"
+      type: count
+      action: construction-list-rfis
+      filter: { rfi-status: open }
+      severity: warning
+      icon: help-circle
+      drill_action: construction-list-rfis
+      drill_filter: { rfi-status: open }
+    - key: open_pcos
+      label: "Pending Change Orders"
+      type: count
+      action: construction-list-pcos
+      filter: { pco-status: pending }
+      severity: warning
+      icon: git-branch
+      drill_action: construction-list-pcos
+      drill_filter: { pco-status: pending }
+  quick_actions:
+    - action: construction-add-job
+      label: "New Job"
+      icon: hard-hat
+    - action: construction-add-estimate
+      label: "New Estimate"
+      icon: calculator
+    - action: construction-add-subcontract
+      label: "New Subcontract"
+      icon: file-signature
+    - action: construction-add-daily-report
+      label: "Daily Report"
+      icon: clipboard
+    - action: construction-add-progress-bill
+      label: "New Progress Bill"
+      icon: file-text
+
+workflows:
+  - after: construction-add-job
+    suggest:
+      - action: construction-add-cost-code
+        label: "Add cost codes"
+        pass: { job-id: id }
+      - action: construction-add-schedule-of-values
+        label: "Create schedule of values"
+        pass: { job-id: id }
+  - after: construction-add-estimate
+    suggest:
+      - action: construction-add-estimate-line
+        label: "Add estimate lines"
+        pass: { estimate-id: id }
+  - after: construction-submit-estimate
+    suggest:
+      - action: construction-add-bid
+        label: "Record a bid"
+        pass: { estimate-id: id }
+  - after: construction-award-bid
+    suggest:
+      - action: construction-add-subcontract
+        label: "Create subcontract"
+        pass: { job-id: job_id }
+  - after: construction-add-subcontract
+    suggest:
+      - action: construction-add-subcontract-line
+        label: "Add scope items"
+        pass: { subcontract-id: id }
+      - action: construction-approve-subcontract
+        label: "Approve subcontract"
+        pass: { subcontract-id: id }
+  - after: construction-approve-subcontract
+    suggest:
+      - action: construction-add-pay-application
+        label: "Submit pay application"
+        pass: { subcontract-id: id }
+  - after: construction-approve-pay-application
+    suggest:
+      - action: construction-add-lien-waiver
+        label: "Request lien waiver"
+        pass: { subcontract-id: subcontract_id }
+  - after: construction-approve-progress-bill
+    suggest:
+      - action: construction-add-retention
+        label: "Record retention"
+        pass: { job-id: job_id }

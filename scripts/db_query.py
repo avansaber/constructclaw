@@ -3,7 +3,7 @@
 
 Construction project management: job costing, estimating, subcontractors,
 AIA billing, daily reports, change orders, RFIs, safety, project controls.
-Routes all 111 actions across 10 domain modules.
+Routes all 112 actions across 10 domain modules.
 
 Usage: python3 db_query.py --action <action-name> [--flags ...]
 Output: JSON to stdout, exit 0 on success, exit 1 on error.

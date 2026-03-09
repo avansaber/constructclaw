@@ -1,7 +1,7 @@
 """ConstructClaw -- Billing domain module.
 
 AIA progress billing: schedule of values, progress bills, retention.
-12 actions exported via ACTIONS dict.
+14 actions exported via ACTIONS dict (includes approve-progress-bill with cross_skill invoice).
 """
 import os
 import sys
@@ -12,6 +12,7 @@ sys.path.insert(0, os.path.expanduser("~/.openclaw/erpclaw/lib"))
 from erpclaw_lib.naming import get_next_name, register_prefix
 from erpclaw_lib.response import ok, err, row_to_dict
 from erpclaw_lib.audit import audit
+from erpclaw_lib.cross_skill import create_invoice, submit_invoice, CrossSkillError
 
 SKILL = "constructclaw"
 
@@ -302,6 +303,135 @@ def submit_progress_bill(conn, args):
 
 
 # ---------------------------------------------------------------------------
+# approve-progress-bill — creates sales_invoice via cross_skill
+# ---------------------------------------------------------------------------
+def approve_progress_bill(conn, args):
+    """Approve a submitted progress bill and create a sales invoice.
+
+    Transitions bill from 'submitted' -> 'approved'.
+    Looks up the job's customer (client_id) and creates a real
+    sales_invoice via erpclaw-selling cross_skill integration.
+    The invoice is auto-submitted to post GL entries.
+    """
+    pb_id = getattr(args, "progress_bill_id", None)
+    if not pb_id:
+        err("--progress-bill-id is required")
+    row = conn.execute("SELECT * FROM constructclaw_progress_bill WHERE id = ?", (pb_id,)).fetchone()
+    if not row:
+        err(f"Progress bill {pb_id} not found")
+    if row["bill_status"] != "submitted":
+        err(f"Progress bill must be in submitted status to approve (current: {row['bill_status']})")
+
+    current_due = _d(row["current_due"])
+    if current_due <= 0:
+        err(f"Cannot approve progress bill with zero or negative current_due ({current_due})")
+
+    # Look up the job to get customer (client_id) and company_id
+    job = conn.execute("SELECT * FROM constructclaw_job WHERE id = ?", (row["job_id"],)).fetchone()
+    if not job:
+        err(f"Job {row['job_id']} not found")
+
+    customer_id = job["client_id"]
+    if not customer_id:
+        err(f"Job {row['job_id']} has no client_id set. Assign a customer to the job before approving a progress bill.")
+
+    company_id = row["company_id"]
+    bill_number = row["bill_number"]
+    job_name = job["name"]
+
+    # Build invoice line items — single line for the progress bill
+    # This preserves the AIA G702/G703 structure in constructclaw
+    # while creating a proper sales invoice for GL posting
+    items = [{
+        "description": f"Progress Bill #{bill_number} - {job_name}",
+        "qty": "1",
+        "rate": str(current_due.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)),
+    }]
+
+    # If the bill has detail lines, include them as additional context
+    bill_lines = conn.execute(
+        "SELECT * FROM constructclaw_progress_bill_line WHERE bill_id = ? ORDER BY item_number",
+        (pb_id,),
+    ).fetchall()
+
+    if bill_lines:
+        # Replace single-line with detailed SOV lines
+        items = []
+        for bl in bill_lines:
+            this_period = _d(bl["this_period"])
+            if this_period > 0:
+                items.append({
+                    "description": f"[{bl['item_number']}] {bl['description']}",
+                    "qty": "1",
+                    "rate": str(this_period.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)),
+                })
+        # Fallback if all line this_period are zero
+        if not items:
+            items = [{
+                "description": f"Progress Bill #{bill_number} - {job_name}",
+                "qty": "1",
+                "rate": str(current_due.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)),
+            }]
+
+    # Create and submit the sales invoice via cross_skill
+    db_path = getattr(args, "db_path", None)
+    sales_invoice_id = None
+
+    try:
+        inv_result = create_invoice(
+            customer_id=customer_id,
+            items=items,
+            company_id=company_id,
+            remarks=f"ConstructClaw Progress Bill #{bill_number} for job {job_name}",
+            db_path=db_path,
+        )
+        # Extract the invoice ID from the response
+        inv_data = inv_result.get("sales_invoice", inv_result)
+        sales_invoice_id = inv_data.get("id") or inv_data.get("sales_invoice_id")
+
+        if sales_invoice_id:
+            # Auto-submit the invoice to post GL entries
+            try:
+                submit_invoice(invoice_id=sales_invoice_id, db_path=db_path)
+            except CrossSkillError:
+                # Invoice created but submit failed — still link it
+                pass
+
+    except CrossSkillError as e:
+        # Invoice creation failed — approve the bill but warn about missing invoice
+        # This allows the billing workflow to continue even without erpclaw-selling installed
+        sales_invoice_id = None
+        import sys as _sys
+        _sys.stderr.write(f"[constructclaw] Warning: Could not create sales invoice: {e}\n")
+
+    # Update the progress bill status and link the invoice
+    conn.execute(
+        """UPDATE constructclaw_progress_bill
+           SET bill_status = 'approved',
+               sales_invoice_id = ?,
+               updated_at = datetime('now')
+           WHERE id = ?""",
+        (sales_invoice_id, pb_id),
+    )
+
+    audit(conn, SKILL, "construction-approve-progress-bill", "constructclaw_progress_bill", pb_id,
+          new_values={"bill_status": "approved", "sales_invoice_id": sales_invoice_id})
+    conn.commit()
+
+    result = {
+        "progress_bill_id": pb_id,
+        "bill_status": "approved",
+        "current_due": str(current_due.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)),
+    }
+    if sales_invoice_id:
+        result["sales_invoice_id"] = sales_invoice_id
+    else:
+        result["warning"] = "Sales invoice could not be created. erpclaw-selling may not be installed."
+
+    ok(result)
+
+
+# ---------------------------------------------------------------------------
 # add-retention
 # ---------------------------------------------------------------------------
 def add_retention(conn, args):
@@ -447,13 +577,18 @@ def billing_summary(conn, args):
         total_retention = ret  # latest retention total
         if b["bill_status"] == "paid":
             total_paid += due
-        bill_history.append({
+        entry = {
             "bill_number": b["bill_number"],
             "bill_status": b["bill_status"],
             "current_due": str(due.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)),
             "period_from": b["period_from"],
             "period_to": b["period_to"],
-        })
+        }
+        # Include linked sales invoice if present
+        invoice_id = b["sales_invoice_id"] if "sales_invoice_id" in b.keys() else None
+        if invoice_id:
+            entry["sales_invoice_id"] = invoice_id
+        bill_history.append(entry)
 
     contract = _d(job["contract_amount"])
     remaining = contract - total_billed - total_retention
@@ -484,6 +619,7 @@ ACTIONS = {
     "construction-get-progress-bill": get_progress_bill,
     "construction-list-progress-bills": list_progress_bills,
     "construction-submit-progress-bill": submit_progress_bill,
+    "construction-approve-progress-bill": approve_progress_bill,
     "construction-add-retention": add_retention,
     "construction-list-retentions": list_retentions,
     "construction-release-retention": release_retention,

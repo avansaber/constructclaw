@@ -417,6 +417,7 @@ def init_constructclaw_schema(db_path: str = DB_PATH) -> dict:
             current_due         TEXT NOT NULL DEFAULT '0',
             bill_status         TEXT NOT NULL DEFAULT 'draft'
                                 CHECK(bill_status IN ('draft','submitted','approved','paid','rejected')),
+            sales_invoice_id    TEXT,
             notes               TEXT,
             company_id          TEXT NOT NULL REFERENCES company(id) ON DELETE RESTRICT,
             created_at          TEXT DEFAULT (datetime('now')),
