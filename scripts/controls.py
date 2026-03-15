@@ -12,6 +12,7 @@ from decimal import Decimal, ROUND_HALF_UP
 sys.path.insert(0, os.path.expanduser("~/.openclaw/erpclaw/lib"))
 from erpclaw_lib.response import ok, err, row_to_dict
 from erpclaw_lib.audit import audit
+from erpclaw_lib.query import Q, P, Table, Field, fn, Order, insert_row
 
 SKILL = "constructclaw"
 
@@ -32,15 +33,13 @@ def add_earned_value(conn, args):
     if not job_id:
         err("--job-id is required")
 
-    if not conn.execute("SELECT id FROM constructclaw_job WHERE id = ?", (job_id,)).fetchone():
+    if not conn.execute(Q.from_(Table("constructclaw_job")).select(Field("id")).where(Field("id") == P()).get_sql(), (job_id,)).fetchone():
         err(f"Job {job_id} not found")
 
     ev_id = str(uuid.uuid4())
-    conn.execute(
-        """INSERT INTO constructclaw_earned_value
-           (id, job_id, period_date, planned_value, earned_value,
-            actual_cost, budget_at_completion, notes, company_id)
-           VALUES (?,?,?,?,?,?,?,?,?)""",
+    sql, _ = insert_row("constructclaw_earned_value", {"id": P(), "job_id": P(), "period_date": P(), "planned_value": P(), "earned_value": P(), "actual_cost": P(), "budget_at_completion": P(), "notes": P(), "company_id": P()})
+
+    conn.execute(sql,
         (
             ev_id, job_id,
             getattr(args, "period_date", None) or _date.today().isoformat(),
@@ -200,7 +199,7 @@ def cost_forecast(conn, args):
     if not job_id:
         err("--job-id is required")
 
-    job = conn.execute("SELECT * FROM constructclaw_job WHERE id = ?", (job_id,)).fetchone()
+    job = conn.execute(Q.from_(Table("constructclaw_job")).select(Table("constructclaw_job").star).where(Field("id") == P()).get_sql(), (job_id,)).fetchone()
     if not job:
         err(f"Job {job_id} not found")
 

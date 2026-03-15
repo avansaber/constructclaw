@@ -13,6 +13,7 @@ from erpclaw_lib.naming import get_next_name, register_prefix
 from erpclaw_lib.response import ok, err, row_to_dict
 from erpclaw_lib.audit import audit
 from erpclaw_lib.cross_skill import create_invoice, submit_invoice, CrossSkillError
+from erpclaw_lib.query import Q, P, Table, Field, fn, Order, insert_row
 
 SKILL = "constructclaw"
 
@@ -43,7 +44,7 @@ def add_schedule_of_values(conn, args):
     if not getattr(args, "name", None):
         err("--name is required")
 
-    if not conn.execute("SELECT id FROM constructclaw_job WHERE id = ?", (job_id,)).fetchone():
+    if not conn.execute(Q.from_(Table("constructclaw_job")).select(Field("id")).where(Field("id") == P()).get_sql(), (job_id,)).fetchone():
         err(f"Job {job_id} not found")
 
     sov_id = str(uuid.uuid4())
@@ -51,11 +52,10 @@ def add_schedule_of_values(conn, args):
 
     total_contract = getattr(args, "total_contract", None) or "0"
 
-    conn.execute(
-        """INSERT INTO constructclaw_schedule_of_values
-           (id, naming_series, sov_number, job_id, name, total_contract,
-            revised_contract, notes, company_id)
-           VALUES (?,?,?,?,?,?,?,?,?)""",
+    sql, _ = insert_row("constructclaw_schedule_of_values", {"id": P(), "naming_series": P(), "sov_number": P(), "job_id": P(), "name": P(), "total_contract": P(), "revised_contract": P(), "notes": P(), "company_id": P()})
+
+
+    conn.execute(sql,
         (
             sov_id, ns, ns, job_id,
             args.name, total_contract, total_contract,
@@ -77,7 +77,7 @@ def get_schedule_of_values(conn, args):
     sov_id = getattr(args, "sov_id", None)
     if not sov_id:
         err("--sov-id is required")
-    row = conn.execute("SELECT * FROM constructclaw_schedule_of_values WHERE id = ?", (sov_id,)).fetchone()
+    row = conn.execute(Q.from_(Table("constructclaw_schedule_of_values")).select(Table("constructclaw_schedule_of_values").star).where(Field("id") == P()).get_sql(), (sov_id,)).fetchone()
     if not row:
         err(f"Schedule of values {sov_id} not found")
 
@@ -124,7 +124,7 @@ def add_sov_line(conn, args):
     if not getattr(args, "description", None):
         err("--description is required")
 
-    if not conn.execute("SELECT id FROM constructclaw_schedule_of_values WHERE id = ?", (sov_id,)).fetchone():
+    if not conn.execute(Q.from_(Table("constructclaw_schedule_of_values")).select(Field("id")).where(Field("id") == P()).get_sql(), (sov_id,)).fetchone():
         err(f"Schedule of values {sov_id} not found")
 
     item_number = getattr(args, "item_number", None) or "1"
@@ -134,11 +134,10 @@ def add_sov_line(conn, args):
     line_id = str(uuid.uuid4())
     balance = scheduled_value  # initially, balance = scheduled value
 
-    conn.execute(
-        """INSERT INTO constructclaw_sov_line
-           (id, sov_id, item_number, description, scheduled_value,
-            balance_to_finish, retention_pct, company_id)
-           VALUES (?,?,?,?,?,?,?,?)""",
+    sql, _ = insert_row("constructclaw_sov_line", {"id": P(), "sov_id": P(), "item_number": P(), "description": P(), "scheduled_value": P(), "balance_to_finish": P(), "retention_pct": P(), "company_id": P()})
+
+
+    conn.execute(sql,
         (
             line_id, sov_id, item_number,
             args.description, scheduled_value,
@@ -176,7 +175,7 @@ def add_progress_bill(conn, args):
     if not job_id:
         err("--job-id is required")
 
-    if not conn.execute("SELECT id FROM constructclaw_job WHERE id = ?", (job_id,)).fetchone():
+    if not conn.execute(Q.from_(Table("constructclaw_job")).select(Field("id")).where(Field("id") == P()).get_sql(), (job_id,)).fetchone():
         err(f"Job {job_id} not found")
 
     # Get next bill number
@@ -202,11 +201,10 @@ def add_progress_bill(conn, args):
     current_due = _d(total_completed) - _d(total_retention) - _d(total_previous)
     current_due_str = str(current_due.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
 
-    conn.execute(
-        """INSERT INTO constructclaw_progress_bill
-           (id, naming_series, job_id, sov_id, bill_number, period_from, period_to,
-            total_completed, total_retention, total_previous, current_due, notes, company_id)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+    sql, _ = insert_row("constructclaw_progress_bill", {"id": P(), "naming_series": P(), "job_id": P(), "sov_id": P(), "bill_number": P(), "period_from": P(), "period_to": P(), "total_completed": P(), "total_retention": P(), "total_previous": P(), "current_due": P(), "notes": P(), "company_id": P()})
+
+
+    conn.execute(sql,
         (
             pb_id, ns, job_id,
             getattr(args, "sov_id", None),
@@ -240,7 +238,7 @@ def get_progress_bill(conn, args):
     pb_id = getattr(args, "progress_bill_id", None)
     if not pb_id:
         err("--progress-bill-id is required")
-    row = conn.execute("SELECT * FROM constructclaw_progress_bill WHERE id = ?", (pb_id,)).fetchone()
+    row = conn.execute(Q.from_(Table("constructclaw_progress_bill")).select(Table("constructclaw_progress_bill").star).where(Field("id") == P()).get_sql(), (pb_id,)).fetchone()
     if not row:
         err(f"Progress bill {pb_id} not found")
 
@@ -286,7 +284,7 @@ def submit_progress_bill(conn, args):
     pb_id = getattr(args, "progress_bill_id", None)
     if not pb_id:
         err("--progress-bill-id is required")
-    row = conn.execute("SELECT * FROM constructclaw_progress_bill WHERE id = ?", (pb_id,)).fetchone()
+    row = conn.execute(Q.from_(Table("constructclaw_progress_bill")).select(Table("constructclaw_progress_bill").star).where(Field("id") == P()).get_sql(), (pb_id,)).fetchone()
     if not row:
         err(f"Progress bill {pb_id} not found")
     if row["bill_status"] != "draft":
@@ -316,7 +314,7 @@ def approve_progress_bill(conn, args):
     pb_id = getattr(args, "progress_bill_id", None)
     if not pb_id:
         err("--progress-bill-id is required")
-    row = conn.execute("SELECT * FROM constructclaw_progress_bill WHERE id = ?", (pb_id,)).fetchone()
+    row = conn.execute(Q.from_(Table("constructclaw_progress_bill")).select(Table("constructclaw_progress_bill").star).where(Field("id") == P()).get_sql(), (pb_id,)).fetchone()
     if not row:
         err(f"Progress bill {pb_id} not found")
     if row["bill_status"] != "submitted":
@@ -441,7 +439,7 @@ def add_retention(conn, args):
     if not job_id:
         err("--job-id is required")
 
-    if not conn.execute("SELECT id FROM constructclaw_job WHERE id = ?", (job_id,)).fetchone():
+    if not conn.execute(Q.from_(Table("constructclaw_job")).select(Field("id")).where(Field("id") == P()).get_sql(), (job_id,)).fetchone():
         err(f"Job {job_id} not found")
 
     retention_type = getattr(args, "retention_type", None) or "owner"
@@ -451,10 +449,10 @@ def add_retention(conn, args):
     amount_held = getattr(args, "amount_held", None) or "0"
     ret_id = str(uuid.uuid4())
 
-    conn.execute(
-        """INSERT INTO constructclaw_retention
-           (id, job_id, subcontract_id, retention_type, amount_held, balance, notes, company_id)
-           VALUES (?,?,?,?,?,?,?,?)""",
+    sql, _ = insert_row("constructclaw_retention", {"id": P(), "job_id": P(), "subcontract_id": P(), "retention_type": P(), "amount_held": P(), "balance": P(), "notes": P(), "company_id": P()})
+
+
+    conn.execute(sql,
         (
             ret_id, job_id,
             getattr(args, "subcontract_id", None),
@@ -502,7 +500,7 @@ def release_retention(conn, args):
     ret_id = getattr(args, "retention_id", None)
     if not ret_id:
         err("--retention-id is required")
-    row = conn.execute("SELECT * FROM constructclaw_retention WHERE id = ?", (ret_id,)).fetchone()
+    row = conn.execute(Q.from_(Table("constructclaw_retention")).select(Table("constructclaw_retention").star).where(Field("id") == P()).get_sql(), (ret_id,)).fetchone()
     if not row:
         err(f"Retention {ret_id} not found")
     if row["retention_status"] == "released":
@@ -556,7 +554,7 @@ def billing_summary(conn, args):
     if not job_id:
         err("--job-id is required")
 
-    job = conn.execute("SELECT * FROM constructclaw_job WHERE id = ?", (job_id,)).fetchone()
+    job = conn.execute(Q.from_(Table("constructclaw_job")).select(Table("constructclaw_job").star).where(Field("id") == P()).get_sql(), (job_id,)).fetchone()
     if not job:
         err(f"Job {job_id} not found")
 

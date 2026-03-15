@@ -12,6 +12,7 @@ sys.path.insert(0, os.path.expanduser("~/.openclaw/erpclaw/lib"))
 from erpclaw_lib.naming import get_next_name, register_prefix
 from erpclaw_lib.response import ok, err, row_to_dict
 from erpclaw_lib.audit import audit
+from erpclaw_lib.query import Q, P, Table, Field, fn, Order, insert_row
 
 SKILL = "constructclaw"
 
@@ -38,17 +39,16 @@ def add_estimate(conn, args):
     if not getattr(args, "name", None):
         err("--name is required")
 
-    if not conn.execute("SELECT id FROM company WHERE id = ?", (args.company_id,)).fetchone():
+    if not conn.execute(Q.from_(Table("company")).select(Field("id")).where(Field("id") == P()).get_sql(), (args.company_id,)).fetchone():
         err(f"Company {args.company_id} not found")
 
     est_id = str(uuid.uuid4())
     ns = get_next_name(conn, "constructclaw_estimate", company_id=args.company_id)
 
-    conn.execute(
-        """INSERT INTO constructclaw_estimate
-           (id, naming_series, estimate_number, job_id, name, client_name, description,
-            due_date, markup_pct, overhead_pct, profit_pct, notes, company_id)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+    sql, _ = insert_row("constructclaw_estimate", {"id": P(), "naming_series": P(), "estimate_number": P(), "job_id": P(), "name": P(), "client_name": P(), "description": P(), "due_date": P(), "markup_pct": P(), "overhead_pct": P(), "profit_pct": P(), "notes": P(), "company_id": P()})
+
+
+    conn.execute(sql,
         (
             est_id, ns, ns,
             getattr(args, "job_id", None),
@@ -77,7 +77,7 @@ def update_estimate(conn, args):
     est_id = getattr(args, "estimate_id", None)
     if not est_id:
         err("--estimate-id is required")
-    row = conn.execute("SELECT * FROM constructclaw_estimate WHERE id = ?", (est_id,)).fetchone()
+    row = conn.execute(Q.from_(Table("constructclaw_estimate")).select(Table("constructclaw_estimate").star).where(Field("id") == P()).get_sql(), (est_id,)).fetchone()
     if not row:
         err(f"Estimate {est_id} not found")
 
@@ -124,7 +124,7 @@ def get_estimate(conn, args):
     est_id = getattr(args, "estimate_id", None)
     if not est_id:
         err("--estimate-id is required")
-    row = conn.execute("SELECT * FROM constructclaw_estimate WHERE id = ?", (est_id,)).fetchone()
+    row = conn.execute(Q.from_(Table("constructclaw_estimate")).select(Table("constructclaw_estimate").star).where(Field("id") == P()).get_sql(), (est_id,)).fetchone()
     if not row:
         err(f"Estimate {est_id} not found")
 
@@ -180,7 +180,7 @@ def add_estimate_line(conn, args):
     if not getattr(args, "description", None):
         err("--description is required")
 
-    if not conn.execute("SELECT id FROM constructclaw_estimate WHERE id = ?", (est_id,)).fetchone():
+    if not conn.execute(Q.from_(Table("constructclaw_estimate")).select(Field("id")).where(Field("id") == P()).get_sql(), (est_id,)).fetchone():
         err(f"Estimate {est_id} not found")
 
     category = getattr(args, "category", None) or "labor"
@@ -202,10 +202,10 @@ def add_estimate_line(conn, args):
     ).fetchone()
     line_number = (max_row["mx"] or 0) + 1
 
-    conn.execute(
-        """INSERT INTO constructclaw_estimate_line
-           (id, estimate_id, line_number, description, category, quantity, unit, unit_cost, amount, notes, company_id)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+    sql, _ = insert_row("constructclaw_estimate_line", {"id": P(), "estimate_id": P(), "line_number": P(), "description": P(), "category": P(), "quantity": P(), "unit": P(), "unit_cost": P(), "amount": P(), "notes": P(), "company_id": P()})
+
+
+    conn.execute(sql,
         (
             line_id, est_id, line_number,
             args.description, category, quantity,
@@ -237,7 +237,7 @@ def update_estimate_line(conn, args):
     line_id = getattr(args, "line_id", None)
     if not line_id:
         err("--line-id is required")
-    row = conn.execute("SELECT * FROM constructclaw_estimate_line WHERE id = ?", (line_id,)).fetchone()
+    row = conn.execute(Q.from_(Table("constructclaw_estimate_line")).select(Table("constructclaw_estimate_line").star).where(Field("id") == P()).get_sql(), (line_id,)).fetchone()
     if not row:
         err(f"Estimate line {line_id} not found")
 
@@ -305,7 +305,7 @@ def submit_estimate(conn, args):
     est_id = getattr(args, "estimate_id", None)
     if not est_id:
         err("--estimate-id is required")
-    row = conn.execute("SELECT * FROM constructclaw_estimate WHERE id = ?", (est_id,)).fetchone()
+    row = conn.execute(Q.from_(Table("constructclaw_estimate")).select(Table("constructclaw_estimate").star).where(Field("id") == P()).get_sql(), (est_id,)).fetchone()
     if not row:
         err(f"Estimate {est_id} not found")
     if row["estimate_status"] != "draft":
@@ -333,11 +333,10 @@ def add_bid(conn, args):
     bid_id = str(uuid.uuid4())
     ns = get_next_name(conn, "constructclaw_bid", company_id=args.company_id)
 
-    conn.execute(
-        """INSERT INTO constructclaw_bid
-           (id, naming_series, bid_number, estimate_id, job_id, bidder_name,
-            bid_amount, scope_description, exclusions, notes, company_id)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+    sql, _ = insert_row("constructclaw_bid", {"id": P(), "naming_series": P(), "bid_number": P(), "estimate_id": P(), "job_id": P(), "bidder_name": P(), "bid_amount": P(), "scope_description": P(), "exclusions": P(), "notes": P(), "company_id": P()})
+
+
+    conn.execute(sql,
         (
             bid_id, ns, ns,
             getattr(args, "estimate_id", None),
@@ -393,7 +392,7 @@ def award_bid(conn, args):
     bid_id = getattr(args, "bid_id", None)
     if not bid_id:
         err("--bid-id is required")
-    row = conn.execute("SELECT * FROM constructclaw_bid WHERE id = ?", (bid_id,)).fetchone()
+    row = conn.execute(Q.from_(Table("constructclaw_bid")).select(Table("constructclaw_bid").star).where(Field("id") == P()).get_sql(), (bid_id,)).fetchone()
     if not row:
         err(f"Bid {bid_id} not found")
     if row["bid_status"] not in ("submitted", "under_review"):
@@ -464,7 +463,7 @@ def estimate_summary(conn, args):
     est_id = getattr(args, "estimate_id", None)
     if not est_id:
         err("--estimate-id is required")
-    row = conn.execute("SELECT * FROM constructclaw_estimate WHERE id = ?", (est_id,)).fetchone()
+    row = conn.execute(Q.from_(Table("constructclaw_estimate")).select(Table("constructclaw_estimate").star).where(Field("id") == P()).get_sql(), (est_id,)).fetchone()
     if not row:
         err(f"Estimate {est_id} not found")
 

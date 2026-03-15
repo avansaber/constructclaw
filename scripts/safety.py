@@ -13,6 +13,7 @@ sys.path.insert(0, os.path.expanduser("~/.openclaw/erpclaw/lib"))
 from erpclaw_lib.naming import get_next_name, register_prefix
 from erpclaw_lib.response import ok, err, row_to_dict
 from erpclaw_lib.audit import audit
+from erpclaw_lib.query import Q, P, Table, Field, fn, Order, insert_row
 
 SKILL = "constructclaw"
 
@@ -39,7 +40,7 @@ def add_incident(conn, args):
     if not getattr(args, "description", None):
         err("--description is required")
 
-    if not conn.execute("SELECT id FROM constructclaw_job WHERE id = ?", (job_id,)).fetchone():
+    if not conn.execute(Q.from_(Table("constructclaw_job")).select(Field("id")).where(Field("id") == P()).get_sql(), (job_id,)).fetchone():
         err(f"Job {job_id} not found")
 
     incident_type = getattr(args, "incident_type", None) or "near_miss"
@@ -55,13 +56,10 @@ def add_incident(conn, args):
 
     osha_recordable = 1 if incident_type in ("recordable", "lost_time", "fatality") else 0
 
-    conn.execute(
-        """INSERT INTO constructclaw_incident
-           (id, naming_series, incident_number, job_id, incident_date, incident_time,
-            incident_type, severity, location, description, injured_party,
-            witnesses, root_cause, corrective_action, osha_recordable,
-            days_lost, notes, company_id)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+    sql, _ = insert_row("constructclaw_incident", {"id": P(), "naming_series": P(), "incident_number": P(), "job_id": P(), "incident_date": P(), "incident_time": P(), "incident_type": P(), "severity": P(), "location": P(), "description": P(), "injured_party": P(), "witnesses": P(), "root_cause": P(), "corrective_action": P(), "osha_recordable": P(), "days_lost": P(), "notes": P(), "company_id": P()})
+
+
+    conn.execute(sql,
         (
             inc_id, ns, ns, job_id,
             getattr(args, "incident_date", None) or _date.today().isoformat(),
@@ -94,7 +92,7 @@ def update_incident(conn, args):
     inc_id = getattr(args, "incident_id", None)
     if not inc_id:
         err("--incident-id is required")
-    row = conn.execute("SELECT * FROM constructclaw_incident WHERE id = ?", (inc_id,)).fetchone()
+    row = conn.execute(Q.from_(Table("constructclaw_incident")).select(Table("constructclaw_incident").star).where(Field("id") == P()).get_sql(), (inc_id,)).fetchone()
     if not row:
         err(f"Incident {inc_id} not found")
 
@@ -161,7 +159,7 @@ def get_incident(conn, args):
     inc_id = getattr(args, "incident_id", None)
     if not inc_id:
         err("--incident-id is required")
-    row = conn.execute("SELECT * FROM constructclaw_incident WHERE id = ?", (inc_id,)).fetchone()
+    row = conn.execute(Q.from_(Table("constructclaw_incident")).select(Table("constructclaw_incident").star).where(Field("id") == P()).get_sql(), (inc_id,)).fetchone()
     if not row:
         err(f"Incident {inc_id} not found")
     ok(row_to_dict(row))
@@ -213,7 +211,7 @@ def close_incident(conn, args):
     inc_id = getattr(args, "incident_id", None)
     if not inc_id:
         err("--incident-id is required")
-    row = conn.execute("SELECT * FROM constructclaw_incident WHERE id = ?", (inc_id,)).fetchone()
+    row = conn.execute(Q.from_(Table("constructclaw_incident")).select(Table("constructclaw_incident").star).where(Field("id") == P()).get_sql(), (inc_id,)).fetchone()
     if not row:
         err(f"Incident {inc_id} not found")
     if row["incident_status"] == "closed":
@@ -241,15 +239,13 @@ def add_toolbox_talk(conn, args):
     if not getattr(args, "topic", None):
         err("--topic is required")
 
-    if not conn.execute("SELECT id FROM constructclaw_job WHERE id = ?", (job_id,)).fetchone():
+    if not conn.execute(Q.from_(Table("constructclaw_job")).select(Field("id")).where(Field("id") == P()).get_sql(), (job_id,)).fetchone():
         err(f"Job {job_id} not found")
 
     tt_id = str(uuid.uuid4())
-    conn.execute(
-        """INSERT INTO constructclaw_toolbox_talk
-           (id, job_id, talk_date, topic, presenter, attendee_count,
-            attendees, duration_minutes, notes, company_id)
-           VALUES (?,?,?,?,?,?,?,?,?,?)""",
+    sql, _ = insert_row("constructclaw_toolbox_talk", {"id": P(), "job_id": P(), "talk_date": P(), "topic": P(), "presenter": P(), "attendee_count": P(), "attendees": P(), "duration_minutes": P(), "notes": P(), "company_id": P()})
+
+    conn.execute(sql,
         (
             tt_id, job_id,
             getattr(args, "talk_date", None) or _date.today().isoformat(),
@@ -301,11 +297,9 @@ def add_safety_cert(conn, args):
         err("--cert-type is required")
 
     sc_id = str(uuid.uuid4())
-    conn.execute(
-        """INSERT INTO constructclaw_safety_cert
-           (id, job_id, worker_name, cert_type, cert_number,
-            issued_date, expiry_date, issuing_authority, company_id)
-           VALUES (?,?,?,?,?,?,?,?,?)""",
+    sql, _ = insert_row("constructclaw_safety_cert", {"id": P(), "job_id": P(), "worker_name": P(), "cert_type": P(), "cert_number": P(), "issued_date": P(), "expiry_date": P(), "issuing_authority": P(), "company_id": P()})
+
+    conn.execute(sql,
         (
             sc_id,
             getattr(args, "job_id", None),
@@ -361,7 +355,7 @@ def expire_safety_cert(conn, args):
     sc_id = getattr(args, "safety_cert_id", None)
     if not sc_id:
         err("--safety-cert-id is required")
-    row = conn.execute("SELECT * FROM constructclaw_safety_cert WHERE id = ?", (sc_id,)).fetchone()
+    row = conn.execute(Q.from_(Table("constructclaw_safety_cert")).select(Table("constructclaw_safety_cert").star).where(Field("id") == P()).get_sql(), (sc_id,)).fetchone()
     if not row:
         err(f"Safety cert {sc_id} not found")
     if row["cert_status"] in ("expired", "revoked"):

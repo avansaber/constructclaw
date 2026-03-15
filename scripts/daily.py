@@ -13,6 +13,7 @@ sys.path.insert(0, os.path.expanduser("~/.openclaw/erpclaw/lib"))
 from erpclaw_lib.naming import get_next_name, register_prefix
 from erpclaw_lib.response import ok, err, row_to_dict
 from erpclaw_lib.audit import audit
+from erpclaw_lib.query import Q, P, Table, Field, fn, Order, insert_row
 
 SKILL = "constructclaw"
 
@@ -37,18 +38,16 @@ def add_daily_report(conn, args):
     if not job_id:
         err("--job-id is required")
 
-    if not conn.execute("SELECT id FROM constructclaw_job WHERE id = ?", (job_id,)).fetchone():
+    if not conn.execute(Q.from_(Table("constructclaw_job")).select(Field("id")).where(Field("id") == P()).get_sql(), (job_id,)).fetchone():
         err(f"Job {job_id} not found")
 
     dr_id = str(uuid.uuid4())
     ns = get_next_name(conn, "constructclaw_daily_report", company_id=args.company_id)
 
-    conn.execute(
-        """INSERT INTO constructclaw_daily_report
-           (id, naming_series, job_id, report_date, superintendent, weather,
-            temperature_high, temperature_low, work_description, delays,
-            visitors, notes, company_id)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+    sql, _ = insert_row("constructclaw_daily_report", {"id": P(), "naming_series": P(), "job_id": P(), "report_date": P(), "superintendent": P(), "weather": P(), "temperature_high": P(), "temperature_low": P(), "work_description": P(), "delays": P(), "visitors": P(), "notes": P(), "company_id": P()})
+
+
+    conn.execute(sql,
         (
             dr_id, ns, job_id,
             getattr(args, "report_date", None) or _date.today().isoformat(),
@@ -77,7 +76,7 @@ def update_daily_report(conn, args):
     dr_id = getattr(args, "daily_report_id", None)
     if not dr_id:
         err("--daily-report-id is required")
-    row = conn.execute("SELECT * FROM constructclaw_daily_report WHERE id = ?", (dr_id,)).fetchone()
+    row = conn.execute(Q.from_(Table("constructclaw_daily_report")).select(Table("constructclaw_daily_report").star).where(Field("id") == P()).get_sql(), (dr_id,)).fetchone()
     if not row:
         err(f"Daily report {dr_id} not found")
     if row["report_status"] != "draft":
@@ -117,7 +116,7 @@ def get_daily_report(conn, args):
     dr_id = getattr(args, "daily_report_id", None)
     if not dr_id:
         err("--daily-report-id is required")
-    row = conn.execute("SELECT * FROM constructclaw_daily_report WHERE id = ?", (dr_id,)).fetchone()
+    row = conn.execute(Q.from_(Table("constructclaw_daily_report")).select(Table("constructclaw_daily_report").star).where(Field("id") == P()).get_sql(), (dr_id,)).fetchone()
     if not row:
         err(f"Daily report {dr_id} not found")
 
@@ -182,7 +181,7 @@ def submit_daily_report(conn, args):
     dr_id = getattr(args, "daily_report_id", None)
     if not dr_id:
         err("--daily-report-id is required")
-    row = conn.execute("SELECT * FROM constructclaw_daily_report WHERE id = ?", (dr_id,)).fetchone()
+    row = conn.execute(Q.from_(Table("constructclaw_daily_report")).select(Table("constructclaw_daily_report").star).where(Field("id") == P()).get_sql(), (dr_id,)).fetchone()
     if not row:
         err(f"Daily report {dr_id} not found")
     if row["report_status"] != "draft":
@@ -210,14 +209,13 @@ def add_daily_labor(conn, args):
     if not getattr(args, "trade", None):
         err("--trade is required")
 
-    if not conn.execute("SELECT id FROM constructclaw_daily_report WHERE id = ?", (dr_id,)).fetchone():
+    if not conn.execute(Q.from_(Table("constructclaw_daily_report")).select(Field("id")).where(Field("id") == P()).get_sql(), (dr_id,)).fetchone():
         err(f"Daily report {dr_id} not found")
 
     lab_id = str(uuid.uuid4())
-    conn.execute(
-        """INSERT INTO constructclaw_daily_labor
-           (id, daily_report_id, trade, headcount, hours, description, company_id)
-           VALUES (?,?,?,?,?,?,?)""",
+    sql, _ = insert_row("constructclaw_daily_labor", {"id": P(), "daily_report_id": P(), "trade": P(), "headcount": P(), "hours": P(), "description": P(), "company_id": P()})
+
+    conn.execute(sql,
         (
             lab_id, dr_id,
             args.trade,
@@ -258,14 +256,13 @@ def add_daily_material(conn, args):
     if not getattr(args, "material_name", None):
         err("--material-name is required")
 
-    if not conn.execute("SELECT id FROM constructclaw_daily_report WHERE id = ?", (dr_id,)).fetchone():
+    if not conn.execute(Q.from_(Table("constructclaw_daily_report")).select(Field("id")).where(Field("id") == P()).get_sql(), (dr_id,)).fetchone():
         err(f"Daily report {dr_id} not found")
 
     mat_id = str(uuid.uuid4())
-    conn.execute(
-        """INSERT INTO constructclaw_daily_material
-           (id, daily_report_id, material_name, quantity, unit, supplier, delivery_ticket, company_id)
-           VALUES (?,?,?,?,?,?,?,?)""",
+    sql, _ = insert_row("constructclaw_daily_material", {"id": P(), "daily_report_id": P(), "material_name": P(), "quantity": P(), "unit": P(), "supplier": P(), "delivery_ticket": P(), "company_id": P()})
+
+    conn.execute(sql,
         (
             mat_id, dr_id,
             args.material_name,

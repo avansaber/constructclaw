@@ -9,6 +9,7 @@ from decimal import Decimal, ROUND_HALF_UP
 
 sys.path.insert(0, os.path.expanduser("~/.openclaw/erpclaw/lib"))
 from erpclaw_lib.response import ok, err, row_to_dict
+from erpclaw_lib.query import Q, P, Table, Field, fn, Order, insert_row
 
 
 SKILL = "constructclaw"
@@ -28,7 +29,7 @@ def job_cost_report(conn, args):
     if not job_id:
         err("--job-id is required")
 
-    job = conn.execute("SELECT * FROM constructclaw_job WHERE id = ?", (job_id,)).fetchone()
+    job = conn.execute(Q.from_(Table("constructclaw_job")).select(Table("constructclaw_job").star).where(Field("id") == P()).get_sql(), (job_id,)).fetchone()
     if not job:
         err(f"Job {job_id} not found")
 

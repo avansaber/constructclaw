@@ -12,6 +12,7 @@ sys.path.insert(0, os.path.expanduser("~/.openclaw/erpclaw/lib"))
 from erpclaw_lib.naming import get_next_name, register_prefix
 from erpclaw_lib.response import ok, err, row_to_dict
 from erpclaw_lib.audit import audit
+from erpclaw_lib.query import Q, P, Table, Field, fn, Order, insert_row
 
 SKILL = "constructclaw"
 
@@ -52,7 +53,7 @@ def add_job(conn, args):
     if not getattr(args, "name", None):
         err("--name is required")
 
-    if not conn.execute("SELECT id FROM company WHERE id = ?", (args.company_id,)).fetchone():
+    if not conn.execute(Q.from_(Table("company")).select(Field("id")).where(Field("id") == P()).get_sql(), (args.company_id,)).fetchone():
         err(f"Company {args.company_id} not found")
 
     job_type = getattr(args, "job_type", None) or "general"
@@ -66,12 +67,10 @@ def add_job(conn, args):
     job_id = str(uuid.uuid4())
     ns = get_next_name(conn, "constructclaw_job", company_id=args.company_id)
 
-    conn.execute(
-        """INSERT INTO constructclaw_job
-           (id, naming_series, job_number, name, description, client_name, client_id,
-            project_manager, superintendent, job_type, contract_type, contract_amount,
-            start_date, end_date, address, city, state, zip_code, notes, company_id)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+    sql, _ = insert_row("constructclaw_job", {"id": P(), "naming_series": P(), "job_number": P(), "name": P(), "description": P(), "client_name": P(), "client_id": P(), "project_manager": P(), "superintendent": P(), "job_type": P(), "contract_type": P(), "contract_amount": P(), "start_date": P(), "end_date": P(), "address": P(), "city": P(), "state": P(), "zip_code": P(), "notes": P(), "company_id": P()})
+
+
+    conn.execute(sql,
         (
             job_id, ns, ns,
             args.name,
@@ -107,7 +106,7 @@ def update_job(conn, args):
     job_id = getattr(args, "job_id", None)
     if not job_id:
         err("--job-id is required")
-    row = conn.execute("SELECT * FROM constructclaw_job WHERE id = ?", (job_id,)).fetchone()
+    row = conn.execute(Q.from_(Table("constructclaw_job")).select(Table("constructclaw_job").star).where(Field("id") == P()).get_sql(), (job_id,)).fetchone()
     if not row:
         err(f"Job {job_id} not found")
 
@@ -175,7 +174,7 @@ def get_job(conn, args):
     job_id = getattr(args, "job_id", None)
     if not job_id:
         err("--job-id is required")
-    row = conn.execute("SELECT * FROM constructclaw_job WHERE id = ?", (job_id,)).fetchone()
+    row = conn.execute(Q.from_(Table("constructclaw_job")).select(Table("constructclaw_job").star).where(Field("id") == P()).get_sql(), (job_id,)).fetchone()
     if not row:
         err(f"Job {job_id} not found")
     ok(row_to_dict(row))
@@ -229,7 +228,7 @@ def add_cost_code(conn, args):
     if not code:
         err("--code is required")
 
-    if not conn.execute("SELECT id FROM constructclaw_job WHERE id = ?", (job_id,)).fetchone():
+    if not conn.execute(Q.from_(Table("constructclaw_job")).select(Field("id")).where(Field("id") == P()).get_sql(), (job_id,)).fetchone():
         err(f"Job {job_id} not found")
 
     # Check duplicate code within job
@@ -245,10 +244,9 @@ def add_cost_code(conn, args):
         err(f"Invalid category: {category}")
 
     cc_id = str(uuid.uuid4())
-    conn.execute(
-        """INSERT INTO constructclaw_cost_code
-           (id, job_id, code, description, category, budget_amount, budget_hours, company_id)
-           VALUES (?,?,?,?,?,?,?,?)""",
+    sql, _ = insert_row("constructclaw_cost_code", {"id": P(), "job_id": P(), "code": P(), "description": P(), "category": P(), "budget_amount": P(), "budget_hours": P(), "company_id": P()})
+
+    conn.execute(sql,
         (
             cc_id, job_id, code,
             getattr(args, "description", None),
@@ -284,7 +282,7 @@ def batch_add_cost_codes(conn, args):
     if not codes_json:
         err("--codes-json is required (JSON array of cost code objects)")
 
-    if not conn.execute("SELECT id FROM constructclaw_job WHERE id = ?", (job_id,)).fetchone():
+    if not conn.execute(Q.from_(Table("constructclaw_job")).select(Field("id")).where(Field("id") == P()).get_sql(), (job_id,)).fetchone():
         err(f"Job {job_id} not found")
 
     try:
@@ -313,10 +311,9 @@ def batch_add_cost_codes(conn, args):
             err(f"Invalid category '{category}' for cost code {code}")
 
         cc_id = str(uuid.uuid4())
-        conn.execute(
-            """INSERT INTO constructclaw_cost_code
-               (id, job_id, code, description, category, budget_amount, budget_hours, company_id)
-               VALUES (?,?,?,?,?,?,?,?)""",
+        sql, _ = insert_row("constructclaw_cost_code", {"id": P(), "job_id": P(), "code": P(), "description": P(), "category": P(), "budget_amount": P(), "budget_hours": P(), "company_id": P()})
+
+        conn.execute(sql,
             (
                 cc_id, job_id, code,
                 item.get("description"),
@@ -370,12 +367,12 @@ def add_cost_entry(conn, args):
     if not job_id:
         err("--job-id is required")
 
-    if not conn.execute("SELECT id FROM constructclaw_job WHERE id = ?", (job_id,)).fetchone():
+    if not conn.execute(Q.from_(Table("constructclaw_job")).select(Field("id")).where(Field("id") == P()).get_sql(), (job_id,)).fetchone():
         err(f"Job {job_id} not found")
 
     cost_code_id = getattr(args, "cost_code_id", None)
     if cost_code_id:
-        if not conn.execute("SELECT id FROM constructclaw_cost_code WHERE id = ?", (cost_code_id,)).fetchone():
+        if not conn.execute(Q.from_(Table("constructclaw_cost_code")).select(Field("id")).where(Field("id") == P()).get_sql(), (cost_code_id,)).fetchone():
             err(f"Cost code {cost_code_id} not found")
 
     category = getattr(args, "category", None) or "labor"
@@ -394,11 +391,10 @@ def add_cost_entry(conn, args):
     from datetime import date as _date
     entry_date = getattr(args, "entry_date", None) or _date.today().isoformat()
 
-    conn.execute(
-        """INSERT INTO constructclaw_cost_entry
-           (id, job_id, cost_code_id, entry_date, category, description, vendor,
-            reference, quantity, unit_cost, amount, hours, company_id)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+    sql, _ = insert_row("constructclaw_cost_entry", {"id": P(), "job_id": P(), "cost_code_id": P(), "entry_date": P(), "category": P(), "description": P(), "vendor": P(), "reference": P(), "quantity": P(), "unit_cost": P(), "amount": P(), "hours": P(), "company_id": P()})
+
+
+    conn.execute(sql,
         (
             ce_id, job_id, cost_code_id,
             entry_date,
@@ -461,7 +457,7 @@ def add_commitment(conn, args):
     if not job_id:
         err("--job-id is required")
 
-    if not conn.execute("SELECT id FROM constructclaw_job WHERE id = ?", (job_id,)).fetchone():
+    if not conn.execute(Q.from_(Table("constructclaw_job")).select(Field("id")).where(Field("id") == P()).get_sql(), (job_id,)).fetchone():
         err(f"Job {job_id} not found")
 
     commitment_type = getattr(args, "commitment_type", None) or "purchase_order"
@@ -469,11 +465,10 @@ def add_commitment(conn, args):
 
     original_amount = getattr(args, "original_amount", None) or "0"
 
-    conn.execute(
-        """INSERT INTO constructclaw_commitment
-           (id, job_id, cost_code_id, commitment_type, vendor, description,
-            original_amount, revised_amount, company_id)
-           VALUES (?,?,?,?,?,?,?,?,?)""",
+    sql, _ = insert_row("constructclaw_commitment", {"id": P(), "job_id": P(), "cost_code_id": P(), "commitment_type": P(), "vendor": P(), "description": P(), "original_amount": P(), "revised_amount": P(), "company_id": P()})
+
+
+    conn.execute(sql,
         (
             cm_id, job_id,
             getattr(args, "cost_code_id", None),
@@ -499,7 +494,7 @@ def update_commitment(conn, args):
     cm_id = getattr(args, "commitment_id", None)
     if not cm_id:
         err("--commitment-id is required")
-    row = conn.execute("SELECT * FROM constructclaw_commitment WHERE id = ?", (cm_id,)).fetchone()
+    row = conn.execute(Q.from_(Table("constructclaw_commitment")).select(Table("constructclaw_commitment").star).where(Field("id") == P()).get_sql(), (cm_id,)).fetchone()
     if not row:
         err(f"Commitment {cm_id} not found")
 
@@ -576,7 +571,7 @@ def job_cost_summary(conn, args):
     if not job_id:
         err("--job-id is required")
 
-    job = conn.execute("SELECT * FROM constructclaw_job WHERE id = ?", (job_id,)).fetchone()
+    job = conn.execute(Q.from_(Table("constructclaw_job")).select(Table("constructclaw_job").star).where(Field("id") == P()).get_sql(), (job_id,)).fetchone()
     if not job:
         err(f"Job {job_id} not found")
 
@@ -637,7 +632,7 @@ def job_profitability(conn, args):
     if not job_id:
         err("--job-id is required")
 
-    job = conn.execute("SELECT * FROM constructclaw_job WHERE id = ?", (job_id,)).fetchone()
+    job = conn.execute(Q.from_(Table("constructclaw_job")).select(Table("constructclaw_job").star).where(Field("id") == P()).get_sql(), (job_id,)).fetchone()
     if not job:
         err(f"Job {job_id} not found")
 
@@ -691,7 +686,7 @@ def wip_report(conn, args):
     if not job_id:
         err("--job-id is required")
 
-    job = conn.execute("SELECT * FROM constructclaw_job WHERE id = ?", (job_id,)).fetchone()
+    job = conn.execute(Q.from_(Table("constructclaw_job")).select(Table("constructclaw_job").star).where(Field("id") == P()).get_sql(), (job_id,)).fetchone()
     if not job:
         err(f"Job {job_id} not found")
 

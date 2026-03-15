@@ -12,6 +12,7 @@ sys.path.insert(0, os.path.expanduser("~/.openclaw/erpclaw/lib"))
 from erpclaw_lib.naming import get_next_name, register_prefix
 from erpclaw_lib.response import ok, err, row_to_dict
 from erpclaw_lib.audit import audit
+from erpclaw_lib.query import Q, P, Table, Field, fn, Order, insert_row
 
 SKILL = "constructclaw"
 
@@ -48,7 +49,7 @@ def add_subcontract(conn, args):
     if not getattr(args, "subcontractor_name", None):
         err("--subcontractor-name is required")
 
-    if not conn.execute("SELECT id FROM constructclaw_job WHERE id = ?", (job_id,)).fetchone():
+    if not conn.execute(Q.from_(Table("constructclaw_job")).select(Field("id")).where(Field("id") == P()).get_sql(), (job_id,)).fetchone():
         err(f"Job {job_id} not found")
 
     sub_id = str(uuid.uuid4())
@@ -56,12 +57,10 @@ def add_subcontract(conn, args):
 
     original_amount = getattr(args, "original_amount", None) or "0"
 
-    conn.execute(
-        """INSERT INTO constructclaw_subcontract
-           (id, naming_series, subcontract_number, job_id, subcontractor_name, trade,
-            scope_of_work, original_amount, revised_amount, retention_pct,
-            insurance_expiry, license_number, start_date, end_date, notes, company_id)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+    sql, _ = insert_row("constructclaw_subcontract", {"id": P(), "naming_series": P(), "subcontract_number": P(), "job_id": P(), "subcontractor_name": P(), "trade": P(), "scope_of_work": P(), "original_amount": P(), "revised_amount": P(), "retention_pct": P(), "insurance_expiry": P(), "license_number": P(), "start_date": P(), "end_date": P(), "notes": P(), "company_id": P()})
+
+
+    conn.execute(sql,
         (
             sub_id, ns, ns, job_id,
             args.subcontractor_name,
@@ -93,7 +92,7 @@ def update_subcontract(conn, args):
     sub_id = getattr(args, "subcontract_id", None)
     if not sub_id:
         err("--subcontract-id is required")
-    row = conn.execute("SELECT * FROM constructclaw_subcontract WHERE id = ?", (sub_id,)).fetchone()
+    row = conn.execute(Q.from_(Table("constructclaw_subcontract")).select(Table("constructclaw_subcontract").star).where(Field("id") == P()).get_sql(), (sub_id,)).fetchone()
     if not row:
         err(f"Subcontract {sub_id} not found")
 
@@ -140,7 +139,7 @@ def get_subcontract(conn, args):
     sub_id = getattr(args, "subcontract_id", None)
     if not sub_id:
         err("--subcontract-id is required")
-    row = conn.execute("SELECT * FROM constructclaw_subcontract WHERE id = ?", (sub_id,)).fetchone()
+    row = conn.execute(Q.from_(Table("constructclaw_subcontract")).select(Table("constructclaw_subcontract").star).where(Field("id") == P()).get_sql(), (sub_id,)).fetchone()
     if not row:
         err(f"Subcontract {sub_id} not found")
 
@@ -200,7 +199,7 @@ def add_subcontract_line(conn, args):
     if not getattr(args, "description", None):
         err("--description is required")
 
-    if not conn.execute("SELECT id FROM constructclaw_subcontract WHERE id = ?", (sub_id,)).fetchone():
+    if not conn.execute(Q.from_(Table("constructclaw_subcontract")).select(Field("id")).where(Field("id") == P()).get_sql(), (sub_id,)).fetchone():
         err(f"Subcontract {sub_id} not found")
 
     quantity = getattr(args, "quantity", None) or "0"
@@ -217,10 +216,10 @@ def add_subcontract_line(conn, args):
     ).fetchone()
     line_number = (max_row["mx"] or 0) + 1
 
-    conn.execute(
-        """INSERT INTO constructclaw_subcontract_line
-           (id, subcontract_id, line_number, description, quantity, unit, unit_cost, amount, company_id)
-           VALUES (?,?,?,?,?,?,?,?,?)""",
+    sql, _ = insert_row("constructclaw_subcontract_line", {"id": P(), "subcontract_id": P(), "line_number": P(), "description": P(), "quantity": P(), "unit": P(), "unit_cost": P(), "amount": P(), "company_id": P()})
+
+
+    conn.execute(sql,
         (
             line_id, sub_id, line_number,
             args.description, quantity,
@@ -254,7 +253,7 @@ def approve_subcontract(conn, args):
     sub_id = getattr(args, "subcontract_id", None)
     if not sub_id:
         err("--subcontract-id is required")
-    row = conn.execute("SELECT * FROM constructclaw_subcontract WHERE id = ?", (sub_id,)).fetchone()
+    row = conn.execute(Q.from_(Table("constructclaw_subcontract")).select(Table("constructclaw_subcontract").star).where(Field("id") == P()).get_sql(), (sub_id,)).fetchone()
     if not row:
         err(f"Subcontract {sub_id} not found")
     if row["subcontract_status"] not in ("draft", "pending_approval"):
@@ -280,7 +279,7 @@ def add_pay_application(conn, args):
     if not sub_id:
         err("--subcontract-id is required")
 
-    sub = conn.execute("SELECT * FROM constructclaw_subcontract WHERE id = ?", (sub_id,)).fetchone()
+    sub = conn.execute(Q.from_(Table("constructclaw_subcontract")).select(Table("constructclaw_subcontract").star).where(Field("id") == P()).get_sql(), (sub_id,)).fetchone()
     if not sub:
         err(f"Subcontract {sub_id} not found")
 
@@ -310,12 +309,10 @@ def add_pay_application(conn, args):
 
     current_due = total_earned - retention_held - previous_payments
 
-    conn.execute(
-        """INSERT INTO constructclaw_pay_application
-           (id, naming_series, subcontract_id, application_number, period_from, period_to,
-            work_completed, materials_stored, total_earned, retention_held,
-            previous_payments, current_payment_due, notes, company_id)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+    sql, _ = insert_row("constructclaw_pay_application", {"id": P(), "naming_series": P(), "subcontract_id": P(), "application_number": P(), "period_from": P(), "period_to": P(), "work_completed": P(), "materials_stored": P(), "total_earned": P(), "retention_held": P(), "previous_payments": P(), "current_payment_due": P(), "notes": P(), "company_id": P()})
+
+
+    conn.execute(sql,
         (
             pa_id, ns, sub_id, app_number,
             getattr(args, "period_from", None),
@@ -349,7 +346,7 @@ def get_pay_application(conn, args):
     pa_id = getattr(args, "pay_application_id", None)
     if not pa_id:
         err("--pay-application-id is required")
-    row = conn.execute("SELECT * FROM constructclaw_pay_application WHERE id = ?", (pa_id,)).fetchone()
+    row = conn.execute(Q.from_(Table("constructclaw_pay_application")).select(Table("constructclaw_pay_application").star).where(Field("id") == P()).get_sql(), (pa_id,)).fetchone()
     if not row:
         err(f"Pay application {pa_id} not found")
     ok(row_to_dict(row))
@@ -388,7 +385,7 @@ def approve_pay_application(conn, args):
     pa_id = getattr(args, "pay_application_id", None)
     if not pa_id:
         err("--pay-application-id is required")
-    row = conn.execute("SELECT * FROM constructclaw_pay_application WHERE id = ?", (pa_id,)).fetchone()
+    row = conn.execute(Q.from_(Table("constructclaw_pay_application")).select(Table("constructclaw_pay_application").star).where(Field("id") == P()).get_sql(), (pa_id,)).fetchone()
     if not row:
         err(f"Pay application {pa_id} not found")
     if row["pay_app_status"] not in ("draft", "submitted"):
@@ -411,7 +408,7 @@ def reject_pay_application(conn, args):
     pa_id = getattr(args, "pay_application_id", None)
     if not pa_id:
         err("--pay-application-id is required")
-    row = conn.execute("SELECT * FROM constructclaw_pay_application WHERE id = ?", (pa_id,)).fetchone()
+    row = conn.execute(Q.from_(Table("constructclaw_pay_application")).select(Table("constructclaw_pay_application").star).where(Field("id") == P()).get_sql(), (pa_id,)).fetchone()
     if not row:
         err(f"Pay application {pa_id} not found")
     if row["pay_app_status"] not in ("draft", "submitted"):
@@ -438,7 +435,7 @@ def add_lien_waiver(conn, args):
     if not sub_id:
         err("--subcontract-id is required")
 
-    if not conn.execute("SELECT id FROM constructclaw_subcontract WHERE id = ?", (sub_id,)).fetchone():
+    if not conn.execute(Q.from_(Table("constructclaw_subcontract")).select(Field("id")).where(Field("id") == P()).get_sql(), (sub_id,)).fetchone():
         err(f"Subcontract {sub_id} not found")
 
     waiver_type = getattr(args, "waiver_type", None) or "conditional_progress"
@@ -446,11 +443,9 @@ def add_lien_waiver(conn, args):
         err(f"Invalid waiver-type: {waiver_type}")
 
     lw_id = str(uuid.uuid4())
-    conn.execute(
-        """INSERT INTO constructclaw_lien_waiver
-           (id, subcontract_id, pay_application_id, waiver_type, amount,
-            through_date, received_date, notes, company_id)
-           VALUES (?,?,?,?,?,?,?,?,?)""",
+    sql, _ = insert_row("constructclaw_lien_waiver", {"id": P(), "subcontract_id": P(), "pay_application_id": P(), "waiver_type": P(), "amount": P(), "through_date": P(), "received_date": P(), "notes": P(), "company_id": P()})
+
+    conn.execute(sql,
         (
             lw_id, sub_id,
             getattr(args, "pay_application_id", None),

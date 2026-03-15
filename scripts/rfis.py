@@ -11,6 +11,7 @@ sys.path.insert(0, os.path.expanduser("~/.openclaw/erpclaw/lib"))
 from erpclaw_lib.naming import get_next_name, register_prefix
 from erpclaw_lib.response import ok, err, row_to_dict
 from erpclaw_lib.audit import audit
+from erpclaw_lib.query import Q, P, Table, Field, fn, Order, insert_row
 
 SKILL = "constructclaw"
 
@@ -39,7 +40,7 @@ def add_rfi(conn, args):
     if not getattr(args, "question", None):
         err("--question is required")
 
-    if not conn.execute("SELECT id FROM constructclaw_job WHERE id = ?", (job_id,)).fetchone():
+    if not conn.execute(Q.from_(Table("constructclaw_job")).select(Field("id")).where(Field("id") == P()).get_sql(), (job_id,)).fetchone():
         err(f"Job {job_id} not found")
 
     priority = getattr(args, "priority", None) or "normal"
@@ -49,12 +50,10 @@ def add_rfi(conn, args):
     rfi_id = str(uuid.uuid4())
     ns = get_next_name(conn, "constructclaw_rfi", company_id=args.company_id)
 
-    conn.execute(
-        """INSERT INTO constructclaw_rfi
-           (id, naming_series, rfi_number, job_id, subject, question,
-            initiated_by, assigned_to, priority, date_required,
-            cost_impact, schedule_impact_days, notes, company_id)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+    sql, _ = insert_row("constructclaw_rfi", {"id": P(), "naming_series": P(), "rfi_number": P(), "job_id": P(), "subject": P(), "question": P(), "initiated_by": P(), "assigned_to": P(), "priority": P(), "date_required": P(), "cost_impact": P(), "schedule_impact_days": P(), "notes": P(), "company_id": P()})
+
+
+    conn.execute(sql,
         (
             rfi_id, ns, ns, job_id,
             args.subject, args.question,
@@ -82,7 +81,7 @@ def update_rfi(conn, args):
     rfi_id = getattr(args, "rfi_id", None)
     if not rfi_id:
         err("--rfi-id is required")
-    row = conn.execute("SELECT * FROM constructclaw_rfi WHERE id = ?", (rfi_id,)).fetchone()
+    row = conn.execute(Q.from_(Table("constructclaw_rfi")).select(Table("constructclaw_rfi").star).where(Field("id") == P()).get_sql(), (rfi_id,)).fetchone()
     if not row:
         err(f"RFI {rfi_id} not found")
 
@@ -134,7 +133,7 @@ def get_rfi(conn, args):
     rfi_id = getattr(args, "rfi_id", None)
     if not rfi_id:
         err("--rfi-id is required")
-    row = conn.execute("SELECT * FROM constructclaw_rfi WHERE id = ?", (rfi_id,)).fetchone()
+    row = conn.execute(Q.from_(Table("constructclaw_rfi")).select(Table("constructclaw_rfi").star).where(Field("id") == P()).get_sql(), (rfi_id,)).fetchone()
     if not row:
         err(f"RFI {rfi_id} not found")
     ok(row_to_dict(row))
@@ -189,7 +188,7 @@ def respond_to_rfi(conn, args):
     if not getattr(args, "response", None):
         err("--response is required")
 
-    row = conn.execute("SELECT * FROM constructclaw_rfi WHERE id = ?", (rfi_id,)).fetchone()
+    row = conn.execute(Q.from_(Table("constructclaw_rfi")).select(Table("constructclaw_rfi").star).where(Field("id") == P()).get_sql(), (rfi_id,)).fetchone()
     if not row:
         err(f"RFI {rfi_id} not found")
     if row["rfi_status"] not in ("open",):
@@ -215,7 +214,7 @@ def close_rfi(conn, args):
     rfi_id = getattr(args, "rfi_id", None)
     if not rfi_id:
         err("--rfi-id is required")
-    row = conn.execute("SELECT * FROM constructclaw_rfi WHERE id = ?", (rfi_id,)).fetchone()
+    row = conn.execute(Q.from_(Table("constructclaw_rfi")).select(Table("constructclaw_rfi").star).where(Field("id") == P()).get_sql(), (rfi_id,)).fetchone()
     if not row:
         err(f"RFI {rfi_id} not found")
     if row["rfi_status"] not in ("open", "responded"):
@@ -243,17 +242,16 @@ def add_submittal(conn, args):
     if not getattr(args, "title", None):
         err("--title is required")
 
-    if not conn.execute("SELECT id FROM constructclaw_job WHERE id = ?", (job_id,)).fetchone():
+    if not conn.execute(Q.from_(Table("constructclaw_job")).select(Field("id")).where(Field("id") == P()).get_sql(), (job_id,)).fetchone():
         err(f"Job {job_id} not found")
 
     sub_id = str(uuid.uuid4())
     ns = get_next_name(conn, "constructclaw_submittal", company_id=args.company_id)
 
-    conn.execute(
-        """INSERT INTO constructclaw_submittal
-           (id, naming_series, submittal_number, job_id, spec_section, title,
-            description, submitted_by, submitted_to, date_required, notes, company_id)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+    sql, _ = insert_row("constructclaw_submittal", {"id": P(), "naming_series": P(), "submittal_number": P(), "job_id": P(), "spec_section": P(), "title": P(), "description": P(), "submitted_by": P(), "submitted_to": P(), "date_required": P(), "notes": P(), "company_id": P()})
+
+
+    conn.execute(sql,
         (
             sub_id, ns, ns, job_id,
             getattr(args, "spec_section", None),
@@ -280,7 +278,7 @@ def update_submittal(conn, args):
     sub_id = getattr(args, "submittal_id", None)
     if not sub_id:
         err("--submittal-id is required")
-    row = conn.execute("SELECT * FROM constructclaw_submittal WHERE id = ?", (sub_id,)).fetchone()
+    row = conn.execute(Q.from_(Table("constructclaw_submittal")).select(Table("constructclaw_submittal").star).where(Field("id") == P()).get_sql(), (sub_id,)).fetchone()
     if not row:
         err(f"Submittal {sub_id} not found")
 
@@ -360,7 +358,7 @@ def review_submittal(conn, args):
     if decision not in ("approved", "approved_as_noted", "revise_resubmit", "rejected"):
         err(f"Invalid decision: {decision}. Must be approved, approved_as_noted, revise_resubmit, or rejected")
 
-    row = conn.execute("SELECT * FROM constructclaw_submittal WHERE id = ?", (sub_id,)).fetchone()
+    row = conn.execute(Q.from_(Table("constructclaw_submittal")).select(Table("constructclaw_submittal").star).where(Field("id") == P()).get_sql(), (sub_id,)).fetchone()
     if not row:
         err(f"Submittal {sub_id} not found")
     if row["submittal_status"] not in ("pending", "under_review"):

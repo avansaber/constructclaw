@@ -12,6 +12,7 @@ sys.path.insert(0, os.path.expanduser("~/.openclaw/erpclaw/lib"))
 from erpclaw_lib.naming import get_next_name, register_prefix
 from erpclaw_lib.response import ok, err, row_to_dict
 from erpclaw_lib.audit import audit
+from erpclaw_lib.query import Q, P, Table, Field, fn, Order, insert_row
 
 SKILL = "constructclaw"
 
@@ -40,17 +41,16 @@ def add_pco(conn, args):
     if not getattr(args, "title", None):
         err("--title is required")
 
-    if not conn.execute("SELECT id FROM constructclaw_job WHERE id = ?", (job_id,)).fetchone():
+    if not conn.execute(Q.from_(Table("constructclaw_job")).select(Field("id")).where(Field("id") == P()).get_sql(), (job_id,)).fetchone():
         err(f"Job {job_id} not found")
 
     pco_id = str(uuid.uuid4())
     ns = get_next_name(conn, "constructclaw_pco", company_id=args.company_id)
 
-    conn.execute(
-        """INSERT INTO constructclaw_pco
-           (id, naming_series, pco_number, job_id, title, description, reason,
-            cost_impact, time_impact_days, requested_by, notes, company_id)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+    sql, _ = insert_row("constructclaw_pco", {"id": P(), "naming_series": P(), "pco_number": P(), "job_id": P(), "title": P(), "description": P(), "reason": P(), "cost_impact": P(), "time_impact_days": P(), "requested_by": P(), "notes": P(), "company_id": P()})
+
+
+    conn.execute(sql,
         (
             pco_id, ns, ns, job_id,
             args.title,
@@ -77,7 +77,7 @@ def update_pco(conn, args):
     pco_id = getattr(args, "pco_id", None)
     if not pco_id:
         err("--pco-id is required")
-    row = conn.execute("SELECT * FROM constructclaw_pco WHERE id = ?", (pco_id,)).fetchone()
+    row = conn.execute(Q.from_(Table("constructclaw_pco")).select(Table("constructclaw_pco").star).where(Field("id") == P()).get_sql(), (pco_id,)).fetchone()
     if not row:
         err(f"PCO {pco_id} not found")
 
@@ -128,7 +128,7 @@ def get_pco(conn, args):
     pco_id = getattr(args, "pco_id", None)
     if not pco_id:
         err("--pco-id is required")
-    row = conn.execute("SELECT * FROM constructclaw_pco WHERE id = ?", (pco_id,)).fetchone()
+    row = conn.execute(Q.from_(Table("constructclaw_pco")).select(Table("constructclaw_pco").star).where(Field("id") == P()).get_sql(), (pco_id,)).fetchone()
     if not row:
         err(f"PCO {pco_id} not found")
     ok(row_to_dict(row))
@@ -176,7 +176,7 @@ def approve_pco(conn, args):
     pco_id = getattr(args, "pco_id", None)
     if not pco_id:
         err("--pco-id is required")
-    pco = conn.execute("SELECT * FROM constructclaw_pco WHERE id = ?", (pco_id,)).fetchone()
+    pco = conn.execute(Q.from_(Table("constructclaw_pco")).select(Table("constructclaw_pco").star).where(Field("id") == P()).get_sql(), (pco_id,)).fetchone()
     if not pco:
         err(f"PCO {pco_id} not found")
     if pco["pco_status"] not in ("identified", "pricing", "submitted"):
@@ -206,11 +206,10 @@ def approve_pco(conn, args):
     cost_change = _d(pco["cost_impact"])
     new_contract = current_contract + existing_total + cost_change
 
-    conn.execute(
-        """INSERT INTO constructclaw_cco
-           (id, naming_series, cco_number, job_id, pco_id, title, description,
-            cost_change, time_change_days, new_contract_amount, notes, company_id)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+    sql, _ = insert_row("constructclaw_cco", {"id": P(), "naming_series": P(), "cco_number": P(), "job_id": P(), "pco_id": P(), "title": P(), "description": P(), "cost_change": P(), "time_change_days": P(), "new_contract_amount": P(), "notes": P(), "company_id": P()})
+
+
+    conn.execute(sql,
         (
             cco_id, ns, ns, pco["job_id"], pco_id,
             pco["title"], pco["description"],
@@ -244,7 +243,7 @@ def add_cco(conn, args):
     if not getattr(args, "title", None):
         err("--title is required")
 
-    if not conn.execute("SELECT id FROM constructclaw_job WHERE id = ?", (job_id,)).fetchone():
+    if not conn.execute(Q.from_(Table("constructclaw_job")).select(Field("id")).where(Field("id") == P()).get_sql(), (job_id,)).fetchone():
         err(f"Job {job_id} not found")
 
     cco_id = str(uuid.uuid4())
@@ -252,11 +251,10 @@ def add_cco(conn, args):
 
     cost_change = getattr(args, "cost_change", None) or "0"
 
-    conn.execute(
-        """INSERT INTO constructclaw_cco
-           (id, naming_series, cco_number, job_id, pco_id, title, description,
-            cost_change, time_change_days, notes, company_id)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+    sql, _ = insert_row("constructclaw_cco", {"id": P(), "naming_series": P(), "cco_number": P(), "job_id": P(), "pco_id": P(), "title": P(), "description": P(), "cost_change": P(), "time_change_days": P(), "notes": P(), "company_id": P()})
+
+
+    conn.execute(sql,
         (
             cco_id, ns, ns, job_id,
             getattr(args, "pco_id", None),
@@ -282,7 +280,7 @@ def get_cco(conn, args):
     cco_id = getattr(args, "cco_id", None)
     if not cco_id:
         err("--cco-id is required")
-    row = conn.execute("SELECT * FROM constructclaw_cco WHERE id = ?", (cco_id,)).fetchone()
+    row = conn.execute(Q.from_(Table("constructclaw_cco")).select(Table("constructclaw_cco").star).where(Field("id") == P()).get_sql(), (cco_id,)).fetchone()
     if not row:
         err(f"CCO {cco_id} not found")
     ok(row_to_dict(row))
@@ -320,7 +318,7 @@ def approve_cco(conn, args):
     cco_id = getattr(args, "cco_id", None)
     if not cco_id:
         err("--cco-id is required")
-    row = conn.execute("SELECT * FROM constructclaw_cco WHERE id = ?", (cco_id,)).fetchone()
+    row = conn.execute(Q.from_(Table("constructclaw_cco")).select(Table("constructclaw_cco").star).where(Field("id") == P()).get_sql(), (cco_id,)).fetchone()
     if not row:
         err(f"CCO {cco_id} not found")
     if row["cco_status"] not in ("draft", "pending"):
@@ -349,7 +347,7 @@ def change_order_impact(conn, args):
     if not job_id:
         err("--job-id is required")
 
-    job = conn.execute("SELECT * FROM constructclaw_job WHERE id = ?", (job_id,)).fetchone()
+    job = conn.execute(Q.from_(Table("constructclaw_job")).select(Table("constructclaw_job").star).where(Field("id") == P()).get_sql(), (job_id,)).fetchone()
     if not job:
         err(f"Job {job_id} not found")
 
