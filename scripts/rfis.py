@@ -11,9 +11,12 @@ sys.path.insert(0, os.path.expanduser("~/.openclaw/erpclaw/lib"))
 from erpclaw_lib.naming import get_next_name, register_prefix
 from erpclaw_lib.response import ok, err, row_to_dict
 from erpclaw_lib.audit import audit
-from erpclaw_lib.query import Q, P, Table, Field, fn, Order, insert_row
+from erpclaw_lib.query import Q, P, Table, Field, fn, Order, insert_row, LiteralValue, dynamic_update
 
 SKILL = "constructclaw"
+
+_t_rfi = Table("constructclaw_rfi")
+_t_submittal = Table("constructclaw_submittal")
 
 register_prefix("constructclaw_rfi", "CCRFI-")
 register_prefix("constructclaw_submittal", "CCSUBM-")
@@ -81,11 +84,11 @@ def update_rfi(conn, args):
     rfi_id = getattr(args, "rfi_id", None)
     if not rfi_id:
         err("--rfi-id is required")
-    row = conn.execute(Q.from_(Table("constructclaw_rfi")).select(Table("constructclaw_rfi").star).where(Field("id") == P()).get_sql(), (rfi_id,)).fetchone()
+    row = conn.execute(Q.from_(_t_rfi).select(_t_rfi.star).where(_t_rfi.id == P()).get_sql(), (rfi_id,)).fetchone()
     if not row:
         err(f"RFI {rfi_id} not found")
 
-    updates, params, changed = [], [], []
+    data, changed = {}, []
     for field, attr in [
         ("subject", "subject"), ("question", "question"),
         ("initiated_by", "initiated_by"), ("assigned_to", "assigned_to"),
@@ -94,32 +97,27 @@ def update_rfi(conn, args):
     ]:
         val = getattr(args, attr, None)
         if val is not None:
-            updates.append(f"{field} = ?")
-            params.append(val)
+            data[field] = val
             changed.append(field)
 
     sid = getattr(args, "schedule_impact_days", None)
     if sid is not None:
-        updates.append("schedule_impact_days = ?")
-        params.append(int(sid))
+        data["schedule_impact_days"] = int(sid)
         changed.append("schedule_impact_days")
 
     pr = getattr(args, "priority", None)
     if pr is not None:
         if pr not in VALID_RFI_PRIORITIES:
             err(f"Invalid priority: {pr}")
-        updates.append("priority = ?")
-        params.append(pr)
+        data["priority"] = pr
         changed.append("priority")
 
     if not changed:
         err("No fields to update")
 
-    updates.append("updated_at = datetime('now')")
-    params.append(rfi_id)
-    conn.execute(
-        f"UPDATE constructclaw_rfi SET {', '.join(updates)} WHERE id = ?", params
-    )
+    data["updated_at"] = LiteralValue("datetime('now')")
+    sql, params = dynamic_update("constructclaw_rfi", data, {"id": rfi_id})
+    conn.execute(sql, params)
     audit(conn, SKILL, "construction-update-rfi", "constructclaw_rfi", rfi_id,
           new_values={"updated_fields": changed})
     conn.commit()
@@ -143,37 +141,45 @@ def get_rfi(conn, args):
 # list-rfis
 # ---------------------------------------------------------------------------
 def list_rfis(conn, args):
-    conditions, params = [], []
+    t = _t_rfi
+    q_count = Q.from_(t).select(fn.Count("*").as_("cnt"))
+    q_rows = Q.from_(t).select(t.star)
+    params = []
+
     cid = getattr(args, "company_id", None)
     if cid:
-        conditions.append("company_id = ?")
+        q_count = q_count.where(t.company_id == P())
+        q_rows = q_rows.where(t.company_id == P())
         params.append(cid)
     job_id = getattr(args, "job_id", None)
     if job_id:
-        conditions.append("job_id = ?")
+        q_count = q_count.where(t.job_id == P())
+        q_rows = q_rows.where(t.job_id == P())
         params.append(job_id)
     rs = getattr(args, "rfi_status", None)
     if rs:
-        conditions.append("rfi_status = ?")
+        q_count = q_count.where(t.rfi_status == P())
+        q_rows = q_rows.where(t.rfi_status == P())
         params.append(rs)
     pr = getattr(args, "priority", None)
     if pr:
-        conditions.append("priority = ?")
+        q_count = q_count.where(t.priority == P())
+        q_rows = q_rows.where(t.priority == P())
         params.append(pr)
     search = getattr(args, "search", None)
     if search:
-        conditions.append("(subject LIKE ? OR question LIKE ?)")
-        params.extend([f"%{search}%"] * 2)
+        s = f"%{search}%"
+        like_crit = (t.subject.like(P()) | t.question.like(P()))
+        q_count = q_count.where(like_crit)
+        q_rows = q_rows.where(like_crit)
+        params.extend([s] * 2)
 
-    where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
     limit = getattr(args, "limit", 50) or 50
     offset = getattr(args, "offset", 0) or 0
 
-    total = conn.execute(f"SELECT COUNT(*) as cnt FROM constructclaw_rfi {where}", params).fetchone()["cnt"]
-    rows = conn.execute(
-        f"SELECT * FROM constructclaw_rfi {where} ORDER BY created_at DESC LIMIT ? OFFSET ?",
-        params + [limit, offset],
-    ).fetchall()
+    total = conn.execute(q_count.get_sql(), params).fetchone()["cnt"]
+    q_rows = q_rows.orderby(t.created_at, order=Order.desc).limit(P()).offset(P())
+    rows = conn.execute(q_rows.get_sql(), params + [limit, offset]).fetchall()
     ok({"rfis": [row_to_dict(r) for r in rows], "total_count": total,
         "limit": limit, "offset": offset})
 
@@ -188,19 +194,19 @@ def respond_to_rfi(conn, args):
     if not getattr(args, "response", None):
         err("--response is required")
 
-    row = conn.execute(Q.from_(Table("constructclaw_rfi")).select(Table("constructclaw_rfi").star).where(Field("id") == P()).get_sql(), (rfi_id,)).fetchone()
+    row = conn.execute(Q.from_(_t_rfi).select(_t_rfi.star).where(_t_rfi.id == P()).get_sql(), (rfi_id,)).fetchone()
     if not row:
         err(f"RFI {rfi_id} not found")
     if row["rfi_status"] not in ("open",):
         err(f"RFI must be open to respond (current: {row['rfi_status']})")
 
-    conn.execute(
-        """UPDATE constructclaw_rfi
-           SET response = ?, rfi_status = 'responded',
-               date_responded = date('now'), updated_at = datetime('now')
-           WHERE id = ?""",
-        (args.response, rfi_id),
-    )
+    sql, params = dynamic_update("constructclaw_rfi", {
+        "response": args.response,
+        "rfi_status": "responded",
+        "date_responded": LiteralValue("date('now')"),
+        "updated_at": LiteralValue("datetime('now')"),
+    }, {"id": rfi_id})
+    conn.execute(sql, params)
     audit(conn, SKILL, "construction-respond-to-rfi", "constructclaw_rfi", rfi_id,
           new_values={"rfi_status": "responded"})
     conn.commit()
@@ -214,16 +220,16 @@ def close_rfi(conn, args):
     rfi_id = getattr(args, "rfi_id", None)
     if not rfi_id:
         err("--rfi-id is required")
-    row = conn.execute(Q.from_(Table("constructclaw_rfi")).select(Table("constructclaw_rfi").star).where(Field("id") == P()).get_sql(), (rfi_id,)).fetchone()
+    row = conn.execute(Q.from_(_t_rfi).select(_t_rfi.star).where(_t_rfi.id == P()).get_sql(), (rfi_id,)).fetchone()
     if not row:
         err(f"RFI {rfi_id} not found")
     if row["rfi_status"] not in ("open", "responded"):
         err(f"RFI must be open or responded to close (current: {row['rfi_status']})")
 
-    conn.execute(
-        "UPDATE constructclaw_rfi SET rfi_status = 'closed', updated_at = datetime('now') WHERE id = ?",
-        (rfi_id,),
-    )
+    sql, params = dynamic_update("constructclaw_rfi",
+        {"rfi_status": "closed", "updated_at": LiteralValue("datetime('now')")},
+        {"id": rfi_id})
+    conn.execute(sql, params)
     audit(conn, SKILL, "construction-close-rfi", "constructclaw_rfi", rfi_id,
           new_values={"rfi_status": "closed"})
     conn.commit()
@@ -278,11 +284,11 @@ def update_submittal(conn, args):
     sub_id = getattr(args, "submittal_id", None)
     if not sub_id:
         err("--submittal-id is required")
-    row = conn.execute(Q.from_(Table("constructclaw_submittal")).select(Table("constructclaw_submittal").star).where(Field("id") == P()).get_sql(), (sub_id,)).fetchone()
+    row = conn.execute(Q.from_(_t_submittal).select(_t_submittal.star).where(_t_submittal.id == P()).get_sql(), (sub_id,)).fetchone()
     if not row:
         err(f"Submittal {sub_id} not found")
 
-    updates, params, changed = [], [], []
+    data, changed = {}, []
     for field, attr in [
         ("spec_section", "spec_section"), ("title", "title"),
         ("description", "description"), ("submitted_by", "submitted_by"),
@@ -291,18 +297,15 @@ def update_submittal(conn, args):
     ]:
         val = getattr(args, attr, None)
         if val is not None:
-            updates.append(f"{field} = ?")
-            params.append(val)
+            data[field] = val
             changed.append(field)
 
     if not changed:
         err("No fields to update")
 
-    updates.append("updated_at = datetime('now')")
-    params.append(sub_id)
-    conn.execute(
-        f"UPDATE constructclaw_submittal SET {', '.join(updates)} WHERE id = ?", params
-    )
+    data["updated_at"] = LiteralValue("datetime('now')")
+    sql, params = dynamic_update("constructclaw_submittal", data, {"id": sub_id})
+    conn.execute(sql, params)
     audit(conn, SKILL, "construction-update-submittal", "constructclaw_submittal", sub_id,
           new_values={"updated_fields": changed})
     conn.commit()
@@ -313,33 +316,40 @@ def update_submittal(conn, args):
 # list-submittals
 # ---------------------------------------------------------------------------
 def list_submittals(conn, args):
-    conditions, params = [], []
+    t = _t_submittal
+    q_count = Q.from_(t).select(fn.Count("*").as_("cnt"))
+    q_rows = Q.from_(t).select(t.star)
+    params = []
+
     cid = getattr(args, "company_id", None)
     if cid:
-        conditions.append("company_id = ?")
+        q_count = q_count.where(t.company_id == P())
+        q_rows = q_rows.where(t.company_id == P())
         params.append(cid)
     job_id = getattr(args, "job_id", None)
     if job_id:
-        conditions.append("job_id = ?")
+        q_count = q_count.where(t.job_id == P())
+        q_rows = q_rows.where(t.job_id == P())
         params.append(job_id)
     ss = getattr(args, "submittal_status", None)
     if ss:
-        conditions.append("submittal_status = ?")
+        q_count = q_count.where(t.submittal_status == P())
+        q_rows = q_rows.where(t.submittal_status == P())
         params.append(ss)
     search = getattr(args, "search", None)
     if search:
-        conditions.append("(title LIKE ? OR spec_section LIKE ?)")
-        params.extend([f"%{search}%"] * 2)
+        s = f"%{search}%"
+        like_crit = (t.title.like(P()) | t.spec_section.like(P()))
+        q_count = q_count.where(like_crit)
+        q_rows = q_rows.where(like_crit)
+        params.extend([s] * 2)
 
-    where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
     limit = getattr(args, "limit", 50) or 50
     offset = getattr(args, "offset", 0) or 0
 
-    total = conn.execute(f"SELECT COUNT(*) as cnt FROM constructclaw_submittal {where}", params).fetchone()["cnt"]
-    rows = conn.execute(
-        f"SELECT * FROM constructclaw_submittal {where} ORDER BY created_at DESC LIMIT ? OFFSET ?",
-        params + [limit, offset],
-    ).fetchall()
+    total = conn.execute(q_count.get_sql(), params).fetchone()["cnt"]
+    q_rows = q_rows.orderby(t.created_at, order=Order.desc).limit(P()).offset(P())
+    rows = conn.execute(q_rows.get_sql(), params + [limit, offset]).fetchall()
     ok({"submittals": [row_to_dict(r) for r in rows], "total_count": total,
         "limit": limit, "offset": offset})
 
@@ -358,7 +368,7 @@ def review_submittal(conn, args):
     if decision not in ("approved", "approved_as_noted", "revise_resubmit", "rejected"):
         err(f"Invalid decision: {decision}. Must be approved, approved_as_noted, revise_resubmit, or rejected")
 
-    row = conn.execute(Q.from_(Table("constructclaw_submittal")).select(Table("constructclaw_submittal").star).where(Field("id") == P()).get_sql(), (sub_id,)).fetchone()
+    row = conn.execute(Q.from_(_t_submittal).select(_t_submittal.star).where(_t_submittal.id == P()).get_sql(), (sub_id,)).fetchone()
     if not row:
         err(f"Submittal {sub_id} not found")
     if row["submittal_status"] not in ("pending", "under_review"):
@@ -366,13 +376,13 @@ def review_submittal(conn, args):
 
     review_comments = getattr(args, "review_comments", None) or getattr(args, "notes", None)
 
-    conn.execute(
-        """UPDATE constructclaw_submittal
-           SET submittal_status = ?, review_comments = ?,
-               date_returned = date('now'), updated_at = datetime('now')
-           WHERE id = ?""",
-        (decision, review_comments, sub_id),
-    )
+    sql, params = dynamic_update("constructclaw_submittal", {
+        "submittal_status": decision,
+        "review_comments": review_comments,
+        "date_returned": LiteralValue("date('now')"),
+        "updated_at": LiteralValue("datetime('now')"),
+    }, {"id": sub_id})
+    conn.execute(sql, params)
     audit(conn, SKILL, "construction-review-submittal", "constructclaw_submittal", sub_id,
           new_values={"submittal_status": decision, "review_comments": review_comments})
     conn.commit()

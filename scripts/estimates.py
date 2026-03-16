@@ -12,9 +12,13 @@ sys.path.insert(0, os.path.expanduser("~/.openclaw/erpclaw/lib"))
 from erpclaw_lib.naming import get_next_name, register_prefix
 from erpclaw_lib.response import ok, err, row_to_dict
 from erpclaw_lib.audit import audit
-from erpclaw_lib.query import Q, P, Table, Field, fn, Order, insert_row
+from erpclaw_lib.query import Q, P, Table, Field, fn, Order, insert_row, LiteralValue, dynamic_update
 
 SKILL = "constructclaw"
+
+_t_est = Table("constructclaw_estimate")
+_t_line = Table("constructclaw_estimate_line")
+_t_bid = Table("constructclaw_bid")
 
 register_prefix("constructclaw_estimate", "CCEST-")
 register_prefix("constructclaw_bid", "CCBID-")
@@ -77,11 +81,11 @@ def update_estimate(conn, args):
     est_id = getattr(args, "estimate_id", None)
     if not est_id:
         err("--estimate-id is required")
-    row = conn.execute(Q.from_(Table("constructclaw_estimate")).select(Table("constructclaw_estimate").star).where(Field("id") == P()).get_sql(), (est_id,)).fetchone()
+    row = conn.execute(Q.from_(_t_est).select(_t_est.star).where(_t_est.id == P()).get_sql(), (est_id,)).fetchone()
     if not row:
         err(f"Estimate {est_id} not found")
 
-    updates, params, changed = [], [], []
+    data, changed = {}, []
     for field, attr in [
         ("name", "name"), ("client_name", "client_name"),
         ("description", "description"), ("due_date", "due_date"),
@@ -91,26 +95,22 @@ def update_estimate(conn, args):
     ]:
         val = getattr(args, attr, None)
         if val is not None:
-            updates.append(f"{field} = ?")
-            params.append(val)
+            data[field] = val
             changed.append(field)
 
     es = getattr(args, "estimate_status", None)
     if es is not None:
         if es not in VALID_ESTIMATE_STATUSES:
             err(f"Invalid estimate-status: {es}")
-        updates.append("estimate_status = ?")
-        params.append(es)
+        data["estimate_status"] = es
         changed.append("estimate_status")
 
     if not changed:
         err("No fields to update")
 
-    updates.append("updated_at = datetime('now')")
-    params.append(est_id)
-    conn.execute(
-        f"UPDATE constructclaw_estimate SET {', '.join(updates)} WHERE id = ?", params
-    )
+    data["updated_at"] = LiteralValue("datetime('now')")
+    sql, params = dynamic_update("constructclaw_estimate", data, {"id": est_id})
+    conn.execute(sql, params)
     audit(conn, SKILL, "construction-update-estimate", "constructclaw_estimate", est_id,
           new_values={"updated_fields": changed})
     conn.commit()
@@ -124,16 +124,14 @@ def get_estimate(conn, args):
     est_id = getattr(args, "estimate_id", None)
     if not est_id:
         err("--estimate-id is required")
-    row = conn.execute(Q.from_(Table("constructclaw_estimate")).select(Table("constructclaw_estimate").star).where(Field("id") == P()).get_sql(), (est_id,)).fetchone()
+    row = conn.execute(Q.from_(_t_est).select(_t_est.star).where(_t_est.id == P()).get_sql(), (est_id,)).fetchone()
     if not row:
         err(f"Estimate {est_id} not found")
 
     data = row_to_dict(row)
     # Attach lines
-    lines = conn.execute(
-        "SELECT * FROM constructclaw_estimate_line WHERE estimate_id = ? ORDER BY line_number",
-        (est_id,),
-    ).fetchall()
+    q = Q.from_(_t_line).select(_t_line.star).where(_t_line.estimate_id == P()).orderby(_t_line.line_number)
+    lines = conn.execute(q.get_sql(), (est_id,)).fetchall()
     data["lines"] = [row_to_dict(l) for l in lines]
     ok(data)
 
@@ -142,29 +140,35 @@ def get_estimate(conn, args):
 # list-estimates
 # ---------------------------------------------------------------------------
 def list_estimates(conn, args):
-    conditions, params = [], []
+    t = _t_est
+    q_count = Q.from_(t).select(fn.Count("*").as_("cnt"))
+    q_rows = Q.from_(t).select(t.star)
+    params = []
+
     cid = getattr(args, "company_id", None)
     if cid:
-        conditions.append("company_id = ?")
+        q_count = q_count.where(t.company_id == P())
+        q_rows = q_rows.where(t.company_id == P())
         params.append(cid)
     es = getattr(args, "estimate_status", None)
     if es:
-        conditions.append("estimate_status = ?")
+        q_count = q_count.where(t.estimate_status == P())
+        q_rows = q_rows.where(t.estimate_status == P())
         params.append(es)
     search = getattr(args, "search", None)
     if search:
-        conditions.append("(name LIKE ? OR client_name LIKE ? OR description LIKE ?)")
-        params.extend([f"%{search}%"] * 3)
+        s = f"%{search}%"
+        like_crit = (t.name.like(P()) | t.client_name.like(P()) | t.description.like(P()))
+        q_count = q_count.where(like_crit)
+        q_rows = q_rows.where(like_crit)
+        params.extend([s] * 3)
 
-    where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
     limit = getattr(args, "limit", 50) or 50
     offset = getattr(args, "offset", 0) or 0
 
-    total = conn.execute(f"SELECT COUNT(*) as cnt FROM constructclaw_estimate {where}", params).fetchone()["cnt"]
-    rows = conn.execute(
-        f"SELECT * FROM constructclaw_estimate {where} ORDER BY created_at DESC LIMIT ? OFFSET ?",
-        params + [limit, offset],
-    ).fetchall()
+    total = conn.execute(q_count.get_sql(), params).fetchone()["cnt"]
+    q_rows = q_rows.orderby(t.created_at, order=Order.desc).limit(P()).offset(P())
+    rows = conn.execute(q_rows.get_sql(), params + [limit, offset]).fetchall()
     ok({"estimates": [row_to_dict(r) for r in rows], "total_count": total, "limit": limit, "offset": offset})
 
 
@@ -196,10 +200,8 @@ def add_estimate_line(conn, args):
 
     line_id = str(uuid.uuid4())
     # Get next line number
-    max_row = conn.execute(
-        "SELECT COALESCE(MAX(line_number), 0) as mx FROM constructclaw_estimate_line WHERE estimate_id = ?",
-        (est_id,),
-    ).fetchone()
+    q = Q.from_(_t_line).select(fn.Coalesce(fn.Max(_t_line.line_number), 0).as_("mx")).where(_t_line.estimate_id == P())
+    max_row = conn.execute(q.get_sql(), (est_id,)).fetchone()
     line_number = (max_row["mx"] or 0) + 1
 
     sql, _ = insert_row("constructclaw_estimate_line", {"id": P(), "estimate_id": P(), "line_number": P(), "description": P(), "category": P(), "quantity": P(), "unit": P(), "unit_cost": P(), "amount": P(), "notes": P(), "company_id": P()})
@@ -217,13 +219,16 @@ def add_estimate_line(conn, args):
     )
 
     # Recalculate estimate total
+    # PyPika: skipped — CAST inside COALESCE/SUM aggregate
     total_row = conn.execute(
         "SELECT COALESCE(SUM(CAST(amount AS REAL)), 0) as total FROM constructclaw_estimate_line WHERE estimate_id = ?",
         (est_id,),
     ).fetchone()
     new_total = str(_d(total_row["total"]).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
-    conn.execute("UPDATE constructclaw_estimate SET total_amount = ?, updated_at = datetime('now') WHERE id = ?",
-                 (new_total, est_id))
+    sql_upd, params_upd = dynamic_update("constructclaw_estimate",
+        {"total_amount": new_total, "updated_at": LiteralValue("datetime('now')")},
+        {"id": est_id})
+    conn.execute(sql_upd, params_upd)
 
     conn.commit()
     ok({"line_id": line_id, "estimate_id": est_id, "line_number": line_number,
@@ -237,11 +242,11 @@ def update_estimate_line(conn, args):
     line_id = getattr(args, "line_id", None)
     if not line_id:
         err("--line-id is required")
-    row = conn.execute(Q.from_(Table("constructclaw_estimate_line")).select(Table("constructclaw_estimate_line").star).where(Field("id") == P()).get_sql(), (line_id,)).fetchone()
+    row = conn.execute(Q.from_(_t_line).select(_t_line.star).where(_t_line.id == P()).get_sql(), (line_id,)).fetchone()
     if not row:
         err(f"Estimate line {line_id} not found")
 
-    updates, params, changed = [], [], []
+    data, changed = {}, []
     for field, attr in [
         ("description", "description"), ("quantity", "quantity"),
         ("unit", "unit"), ("unit_cost", "unit_cost"),
@@ -249,35 +254,34 @@ def update_estimate_line(conn, args):
     ]:
         val = getattr(args, attr, None)
         if val is not None:
-            updates.append(f"{field} = ?")
-            params.append(val)
+            data[field] = val
             changed.append(field)
 
     cat = getattr(args, "category", None)
     if cat is not None:
         if cat not in VALID_LINE_CATEGORIES:
             err(f"Invalid category: {cat}")
-        updates.append("category = ?")
-        params.append(cat)
+        data["category"] = cat
         changed.append("category")
 
     if not changed:
         err("No fields to update")
 
-    params.append(line_id)
-    conn.execute(
-        f"UPDATE constructclaw_estimate_line SET {', '.join(updates)} WHERE id = ?", params
-    )
+    sql, params = dynamic_update("constructclaw_estimate_line", data, {"id": line_id})
+    conn.execute(sql, params)
 
     # Recalculate estimate total
     est_id = row["estimate_id"]
+    # PyPika: skipped — CAST inside COALESCE/SUM aggregate
     total_row = conn.execute(
         "SELECT COALESCE(SUM(CAST(amount AS REAL)), 0) as total FROM constructclaw_estimate_line WHERE estimate_id = ?",
         (est_id,),
     ).fetchone()
     new_total = str(_d(total_row["total"]).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
-    conn.execute("UPDATE constructclaw_estimate SET total_amount = ?, updated_at = datetime('now') WHERE id = ?",
-                 (new_total, est_id))
+    sql_upd, params_upd = dynamic_update("constructclaw_estimate",
+        {"total_amount": new_total, "updated_at": LiteralValue("datetime('now')")},
+        {"id": est_id})
+    conn.execute(sql_upd, params_upd)
 
     conn.commit()
     ok({"line_id": line_id, "updated_fields": changed, "estimate_total": new_total})
@@ -291,10 +295,8 @@ def list_estimate_lines(conn, args):
     if not est_id:
         err("--estimate-id is required")
 
-    rows = conn.execute(
-        "SELECT * FROM constructclaw_estimate_line WHERE estimate_id = ? ORDER BY line_number",
-        (est_id,),
-    ).fetchall()
+    q = Q.from_(_t_line).select(_t_line.star).where(_t_line.estimate_id == P()).orderby(_t_line.line_number)
+    rows = conn.execute(q.get_sql(), (est_id,)).fetchall()
     ok({"lines": [row_to_dict(r) for r in rows], "total_count": len(rows)})
 
 
@@ -305,16 +307,16 @@ def submit_estimate(conn, args):
     est_id = getattr(args, "estimate_id", None)
     if not est_id:
         err("--estimate-id is required")
-    row = conn.execute(Q.from_(Table("constructclaw_estimate")).select(Table("constructclaw_estimate").star).where(Field("id") == P()).get_sql(), (est_id,)).fetchone()
+    row = conn.execute(Q.from_(_t_est).select(_t_est.star).where(_t_est.id == P()).get_sql(), (est_id,)).fetchone()
     if not row:
         err(f"Estimate {est_id} not found")
     if row["estimate_status"] != "draft":
         err(f"Estimate must be in draft status to submit (current: {row['estimate_status']})")
 
-    conn.execute(
-        "UPDATE constructclaw_estimate SET estimate_status = 'submitted', updated_at = datetime('now') WHERE id = ?",
-        (est_id,),
-    )
+    sql, params = dynamic_update("constructclaw_estimate",
+        {"estimate_status": "submitted", "updated_at": LiteralValue("datetime('now')")},
+        {"id": est_id})
+    conn.execute(sql, params)
     audit(conn, SKILL, "construction-submit-estimate", "constructclaw_estimate", est_id,
           new_values={"estimate_status": "submitted"})
     conn.commit()
@@ -360,28 +362,29 @@ def add_bid(conn, args):
 # list-bids
 # ---------------------------------------------------------------------------
 def list_bids(conn, args):
-    conditions, params = [], []
+    t = _t_bid
+    q = Q.from_(t).select(t.star)
+    params = []
+
     cid = getattr(args, "company_id", None)
     if cid:
-        conditions.append("company_id = ?")
+        q = q.where(t.company_id == P())
         params.append(cid)
     est_id = getattr(args, "estimate_id", None)
     if est_id:
-        conditions.append("estimate_id = ?")
+        q = q.where(t.estimate_id == P())
         params.append(est_id)
     job_id = getattr(args, "job_id", None)
     if job_id:
-        conditions.append("job_id = ?")
+        q = q.where(t.job_id == P())
         params.append(job_id)
     bs = getattr(args, "bid_status", None)
     if bs:
-        conditions.append("bid_status = ?")
+        q = q.where(t.bid_status == P())
         params.append(bs)
 
-    where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
-    rows = conn.execute(
-        f"SELECT * FROM constructclaw_bid {where} ORDER BY bid_date DESC", params
-    ).fetchall()
+    q = q.orderby(t.bid_date, order=Order.desc)
+    rows = conn.execute(q.get_sql(), params).fetchall()
     ok({"bids": [row_to_dict(r) for r in rows], "total_count": len(rows)})
 
 
@@ -392,16 +395,16 @@ def award_bid(conn, args):
     bid_id = getattr(args, "bid_id", None)
     if not bid_id:
         err("--bid-id is required")
-    row = conn.execute(Q.from_(Table("constructclaw_bid")).select(Table("constructclaw_bid").star).where(Field("id") == P()).get_sql(), (bid_id,)).fetchone()
+    row = conn.execute(Q.from_(_t_bid).select(_t_bid.star).where(_t_bid.id == P()).get_sql(), (bid_id,)).fetchone()
     if not row:
         err(f"Bid {bid_id} not found")
     if row["bid_status"] not in ("submitted", "under_review"):
         err(f"Bid must be submitted or under_review to award (current: {row['bid_status']})")
 
-    conn.execute(
-        "UPDATE constructclaw_bid SET bid_status = 'awarded', updated_at = datetime('now') WHERE id = ?",
-        (bid_id,),
-    )
+    sql, params = dynamic_update("constructclaw_bid",
+        {"bid_status": "awarded", "updated_at": LiteralValue("datetime('now')")},
+        {"id": bid_id})
+    conn.execute(sql, params)
     audit(conn, SKILL, "construction-award-bid", "constructclaw_bid", bid_id,
           new_values={"bid_status": "awarded"})
     conn.commit()
@@ -417,19 +420,20 @@ def compare_bids(conn, args):
     if not est_id and not job_id:
         err("--estimate-id or --job-id is required")
 
-    conditions, params = [], []
+    t = _t_bid
+    q = Q.from_(t).select(t.star)
+    params = []
+
     if est_id:
-        conditions.append("estimate_id = ?")
+        q = q.where(t.estimate_id == P())
         params.append(est_id)
     if job_id:
-        conditions.append("job_id = ?")
+        q = q.where(t.job_id == P())
         params.append(job_id)
 
-    where = f"WHERE {' AND '.join(conditions)}"
-    bids = conn.execute(
-        f"SELECT * FROM constructclaw_bid {where} ORDER BY CAST(bid_amount AS REAL) ASC",
-        params,
-    ).fetchall()
+    # PyPika: skipped — ORDER BY CAST(bid_amount AS REAL) not cleanly expressible
+    q = q.orderby(LiteralValue("CAST(bid_amount AS REAL)"), order=Order.asc)
+    bids = conn.execute(q.get_sql(), params).fetchall()
 
     if not bids:
         ok({"bids": [], "total_count": 0, "message": "No bids found"})
@@ -463,14 +467,12 @@ def estimate_summary(conn, args):
     est_id = getattr(args, "estimate_id", None)
     if not est_id:
         err("--estimate-id is required")
-    row = conn.execute(Q.from_(Table("constructclaw_estimate")).select(Table("constructclaw_estimate").star).where(Field("id") == P()).get_sql(), (est_id,)).fetchone()
+    row = conn.execute(Q.from_(_t_est).select(_t_est.star).where(_t_est.id == P()).get_sql(), (est_id,)).fetchone()
     if not row:
         err(f"Estimate {est_id} not found")
 
-    lines = conn.execute(
-        "SELECT * FROM constructclaw_estimate_line WHERE estimate_id = ? ORDER BY line_number",
-        (est_id,),
-    ).fetchall()
+    q = Q.from_(_t_line).select(_t_line.star).where(_t_line.estimate_id == P()).orderby(_t_line.line_number)
+    lines = conn.execute(q.get_sql(), (est_id,)).fetchall()
 
     by_category = {}
     total = Decimal("0")

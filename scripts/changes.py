@@ -12,9 +12,13 @@ sys.path.insert(0, os.path.expanduser("~/.openclaw/erpclaw/lib"))
 from erpclaw_lib.naming import get_next_name, register_prefix
 from erpclaw_lib.response import ok, err, row_to_dict
 from erpclaw_lib.audit import audit
-from erpclaw_lib.query import Q, P, Table, Field, fn, Order, insert_row
+from erpclaw_lib.query import Q, P, Table, Field, fn, Order, insert_row, LiteralValue, dynamic_update
 
 SKILL = "constructclaw"
+
+_t_pco = Table("constructclaw_pco")
+_t_cco = Table("constructclaw_cco")
+_t_job = Table("constructclaw_job")
 
 register_prefix("constructclaw_pco", "CCPCO-")
 register_prefix("constructclaw_cco", "CCCCO-")
@@ -77,11 +81,11 @@ def update_pco(conn, args):
     pco_id = getattr(args, "pco_id", None)
     if not pco_id:
         err("--pco-id is required")
-    row = conn.execute(Q.from_(Table("constructclaw_pco")).select(Table("constructclaw_pco").star).where(Field("id") == P()).get_sql(), (pco_id,)).fetchone()
+    row = conn.execute(Q.from_(_t_pco).select(_t_pco.star).where(_t_pco.id == P()).get_sql(), (pco_id,)).fetchone()
     if not row:
         err(f"PCO {pco_id} not found")
 
-    updates, params, changed = [], [], []
+    data, changed = {}, []
     for field, attr in [
         ("title", "title"), ("description", "description"),
         ("reason", "reason"), ("cost_impact", "cost_impact"),
@@ -89,32 +93,27 @@ def update_pco(conn, args):
     ]:
         val = getattr(args, attr, None)
         if val is not None:
-            updates.append(f"{field} = ?")
-            params.append(val)
+            data[field] = val
             changed.append(field)
 
     tid = getattr(args, "time_impact_days", None)
     if tid is not None:
-        updates.append("time_impact_days = ?")
-        params.append(int(tid))
+        data["time_impact_days"] = int(tid)
         changed.append("time_impact_days")
 
     ps = getattr(args, "pco_status", None)
     if ps is not None:
         if ps not in VALID_PCO_STATUSES:
             err(f"Invalid pco-status: {ps}")
-        updates.append("pco_status = ?")
-        params.append(ps)
+        data["pco_status"] = ps
         changed.append("pco_status")
 
     if not changed:
         err("No fields to update")
 
-    updates.append("updated_at = datetime('now')")
-    params.append(pco_id)
-    conn.execute(
-        f"UPDATE constructclaw_pco SET {', '.join(updates)} WHERE id = ?", params
-    )
+    data["updated_at"] = LiteralValue("datetime('now')")
+    sql, params = dynamic_update("constructclaw_pco", data, {"id": pco_id})
+    conn.execute(sql, params)
     audit(conn, SKILL, "construction-update-pco", "constructclaw_pco", pco_id,
           new_values={"updated_fields": changed})
     conn.commit()
@@ -138,33 +137,40 @@ def get_pco(conn, args):
 # list-pcos
 # ---------------------------------------------------------------------------
 def list_pcos(conn, args):
-    conditions, params = [], []
+    t = _t_pco
+    q_count = Q.from_(t).select(fn.Count("*").as_("cnt"))
+    q_rows = Q.from_(t).select(t.star)
+    params = []
+
     cid = getattr(args, "company_id", None)
     if cid:
-        conditions.append("company_id = ?")
+        q_count = q_count.where(t.company_id == P())
+        q_rows = q_rows.where(t.company_id == P())
         params.append(cid)
     job_id = getattr(args, "job_id", None)
     if job_id:
-        conditions.append("job_id = ?")
+        q_count = q_count.where(t.job_id == P())
+        q_rows = q_rows.where(t.job_id == P())
         params.append(job_id)
     ps = getattr(args, "pco_status", None)
     if ps:
-        conditions.append("pco_status = ?")
+        q_count = q_count.where(t.pco_status == P())
+        q_rows = q_rows.where(t.pco_status == P())
         params.append(ps)
     search = getattr(args, "search", None)
     if search:
-        conditions.append("(title LIKE ? OR description LIKE ?)")
-        params.extend([f"%{search}%"] * 2)
+        s = f"%{search}%"
+        like_crit = (t.title.like(P()) | t.description.like(P()))
+        q_count = q_count.where(like_crit)
+        q_rows = q_rows.where(like_crit)
+        params.extend([s] * 2)
 
-    where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
     limit = getattr(args, "limit", 50) or 50
     offset = getattr(args, "offset", 0) or 0
 
-    total = conn.execute(f"SELECT COUNT(*) as cnt FROM constructclaw_pco {where}", params).fetchone()["cnt"]
-    rows = conn.execute(
-        f"SELECT * FROM constructclaw_pco {where} ORDER BY created_at DESC LIMIT ? OFFSET ?",
-        params + [limit, offset],
-    ).fetchall()
+    total = conn.execute(q_count.get_sql(), params).fetchone()["cnt"]
+    q_rows = q_rows.orderby(t.created_at, order=Order.desc).limit(P()).offset(P())
+    rows = conn.execute(q_rows.get_sql(), params + [limit, offset]).fetchall()
     ok({"pcos": [row_to_dict(r) for r in rows], "total_count": total,
         "limit": limit, "offset": offset})
 
@@ -176,27 +182,29 @@ def approve_pco(conn, args):
     pco_id = getattr(args, "pco_id", None)
     if not pco_id:
         err("--pco-id is required")
-    pco = conn.execute(Q.from_(Table("constructclaw_pco")).select(Table("constructclaw_pco").star).where(Field("id") == P()).get_sql(), (pco_id,)).fetchone()
+    pco = conn.execute(Q.from_(_t_pco).select(_t_pco.star).where(_t_pco.id == P()).get_sql(), (pco_id,)).fetchone()
     if not pco:
         err(f"PCO {pco_id} not found")
     if pco["pco_status"] not in ("identified", "pricing", "submitted"):
         err(f"PCO must be identified/pricing/submitted to approve (current: {pco['pco_status']})")
 
     # Update PCO status
-    conn.execute(
-        "UPDATE constructclaw_pco SET pco_status = 'approved', updated_at = datetime('now') WHERE id = ?",
-        (pco_id,),
-    )
+    sql, params = dynamic_update("constructclaw_pco",
+        {"pco_status": "approved", "updated_at": LiteralValue("datetime('now')")},
+        {"id": pco_id})
+    conn.execute(sql, params)
 
     # Create CCO from PCO
     cco_id = str(uuid.uuid4())
     ns = get_next_name(conn, "constructclaw_cco", company_id=pco["company_id"])
 
     # Get current contract amount for job
-    job = conn.execute("SELECT contract_amount FROM constructclaw_job WHERE id = ?", (pco["job_id"],)).fetchone()
+    q = Q.from_(_t_job).select(_t_job.contract_amount).where(_t_job.id == P())
+    job = conn.execute(q.get_sql(), (pco["job_id"],)).fetchone()
     current_contract = _d(job["contract_amount"]) if job else Decimal("0")
 
     # Sum existing approved CCOs
+    # PyPika: skipped — CAST inside COALESCE/SUM aggregate with IN clause
     existing_cos = conn.execute(
         "SELECT COALESCE(SUM(CAST(cost_change AS REAL)), 0) as total FROM constructclaw_cco WHERE job_id = ? AND cco_status IN ('approved','executed')",
         (pco["job_id"],),
@@ -290,24 +298,25 @@ def get_cco(conn, args):
 # list-ccos
 # ---------------------------------------------------------------------------
 def list_ccos(conn, args):
-    conditions, params = [], []
+    t = _t_cco
+    q = Q.from_(t).select(t.star)
+    params = []
+
     cid = getattr(args, "company_id", None)
     if cid:
-        conditions.append("company_id = ?")
+        q = q.where(t.company_id == P())
         params.append(cid)
     job_id = getattr(args, "job_id", None)
     if job_id:
-        conditions.append("job_id = ?")
+        q = q.where(t.job_id == P())
         params.append(job_id)
     cs = getattr(args, "cco_status", None)
     if cs:
-        conditions.append("cco_status = ?")
+        q = q.where(t.cco_status == P())
         params.append(cs)
 
-    where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
-    rows = conn.execute(
-        f"SELECT * FROM constructclaw_cco {where} ORDER BY created_at DESC", params
-    ).fetchall()
+    q = q.orderby(t.created_at, order=Order.desc)
+    rows = conn.execute(q.get_sql(), params).fetchall()
     ok({"ccos": [row_to_dict(r) for r in rows], "total_count": len(rows)})
 
 
@@ -318,7 +327,7 @@ def approve_cco(conn, args):
     cco_id = getattr(args, "cco_id", None)
     if not cco_id:
         err("--cco-id is required")
-    row = conn.execute(Q.from_(Table("constructclaw_cco")).select(Table("constructclaw_cco").star).where(Field("id") == P()).get_sql(), (cco_id,)).fetchone()
+    row = conn.execute(Q.from_(_t_cco).select(_t_cco.star).where(_t_cco.id == P()).get_sql(), (cco_id,)).fetchone()
     if not row:
         err(f"CCO {cco_id} not found")
     if row["cco_status"] not in ("draft", "pending"):
@@ -326,13 +335,13 @@ def approve_cco(conn, args):
 
     approved_by = getattr(args, "approved_by", None)
 
-    conn.execute(
-        """UPDATE constructclaw_cco
-           SET cco_status = 'approved', approved_by = ?, approved_date = date('now'),
-               updated_at = datetime('now')
-           WHERE id = ?""",
-        (approved_by, cco_id),
-    )
+    sql, params = dynamic_update("constructclaw_cco", {
+        "cco_status": "approved",
+        "approved_by": approved_by,
+        "approved_date": LiteralValue("date('now')"),
+        "updated_at": LiteralValue("datetime('now')"),
+    }, {"id": cco_id})
+    conn.execute(sql, params)
     audit(conn, SKILL, "construction-approve-cco", "constructclaw_cco", cco_id,
           new_values={"cco_status": "approved", "approved_by": approved_by})
     conn.commit()

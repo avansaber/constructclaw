@@ -12,9 +12,16 @@ sys.path.insert(0, os.path.expanduser("~/.openclaw/erpclaw/lib"))
 from erpclaw_lib.naming import get_next_name, register_prefix
 from erpclaw_lib.response import ok, err, row_to_dict
 from erpclaw_lib.audit import audit
-from erpclaw_lib.query import Q, P, Table, Field, fn, Order, insert_row
+from erpclaw_lib.query import Q, P, Table, Field, fn, Order, insert_row, LiteralValue, dynamic_update
 
 SKILL = "constructclaw"
+
+_t_job = Table("constructclaw_job")
+_t_cc = Table("constructclaw_cost_code")
+_t_ce = Table("constructclaw_cost_entry")
+_t_cm = Table("constructclaw_commitment")
+_t_pb = Table("constructclaw_progress_bill")
+_t_cco = Table("constructclaw_cco")
 
 register_prefix("constructclaw_job", "CCJOB-")
 register_prefix("constructclaw_cost_code", "CCCC-")
@@ -106,11 +113,11 @@ def update_job(conn, args):
     job_id = getattr(args, "job_id", None)
     if not job_id:
         err("--job-id is required")
-    row = conn.execute(Q.from_(Table("constructclaw_job")).select(Table("constructclaw_job").star).where(Field("id") == P()).get_sql(), (job_id,)).fetchone()
+    row = conn.execute(Q.from_(_t_job).select(_t_job.star).where(_t_job.id == P()).get_sql(), (job_id,)).fetchone()
     if not row:
         err(f"Job {job_id} not found")
 
-    updates, params, changed = [], [], []
+    data, changed = {}, []
 
     for field, attr in [
         ("name", "name"), ("description", "description"),
@@ -125,42 +132,36 @@ def update_job(conn, args):
     ]:
         val = getattr(args, attr, None)
         if val is not None:
-            updates.append(f"{field} = ?")
-            params.append(val)
+            data[field] = val
             changed.append(field)
 
     jt = getattr(args, "job_type", None)
     if jt is not None:
         if jt not in VALID_JOB_TYPES:
             err(f"Invalid job-type: {jt}")
-        updates.append("job_type = ?")
-        params.append(jt)
+        data["job_type"] = jt
         changed.append("job_type")
 
     ct = getattr(args, "contract_type", None)
     if ct is not None:
         if ct not in VALID_CONTRACT_TYPES:
             err(f"Invalid contract-type: {ct}")
-        updates.append("contract_type = ?")
-        params.append(ct)
+        data["contract_type"] = ct
         changed.append("contract_type")
 
     js = getattr(args, "job_status", None)
     if js is not None:
         if js not in VALID_JOB_STATUSES:
             err(f"Invalid job-status: {js}")
-        updates.append("job_status = ?")
-        params.append(js)
+        data["job_status"] = js
         changed.append("job_status")
 
     if not changed:
         err("No fields to update")
 
-    updates.append("updated_at = datetime('now')")
-    params.append(job_id)
-    conn.execute(
-        f"UPDATE constructclaw_job SET {', '.join(updates)} WHERE id = ?", params
-    )
+    data["updated_at"] = LiteralValue("datetime('now')")
+    sql, params = dynamic_update("constructclaw_job", data, {"id": job_id})
+    conn.execute(sql, params)
     audit(conn, SKILL, "construction-update-job", "constructclaw_job", job_id,
           new_values={"updated_fields": changed})
     conn.commit()
@@ -174,7 +175,7 @@ def get_job(conn, args):
     job_id = getattr(args, "job_id", None)
     if not job_id:
         err("--job-id is required")
-    row = conn.execute(Q.from_(Table("constructclaw_job")).select(Table("constructclaw_job").star).where(Field("id") == P()).get_sql(), (job_id,)).fetchone()
+    row = conn.execute(Q.from_(_t_job).select(_t_job.star).where(_t_job.id == P()).get_sql(), (job_id,)).fetchone()
     if not row:
         err(f"Job {job_id} not found")
     ok(row_to_dict(row))
@@ -184,33 +185,40 @@ def get_job(conn, args):
 # list-jobs
 # ---------------------------------------------------------------------------
 def list_jobs(conn, args):
-    conditions, params = [], []
+    t = _t_job
+    q_count = Q.from_(t).select(fn.Count("*").as_("cnt"))
+    q_rows = Q.from_(t).select(t.star)
+    params = []
+
     cid = getattr(args, "company_id", None)
     if cid:
-        conditions.append("company_id = ?")
+        q_count = q_count.where(t.company_id == P())
+        q_rows = q_rows.where(t.company_id == P())
         params.append(cid)
     js = getattr(args, "job_status", None)
     if js:
-        conditions.append("job_status = ?")
+        q_count = q_count.where(t.job_status == P())
+        q_rows = q_rows.where(t.job_status == P())
         params.append(js)
     jt = getattr(args, "job_type", None)
     if jt:
-        conditions.append("job_type = ?")
+        q_count = q_count.where(t.job_type == P())
+        q_rows = q_rows.where(t.job_type == P())
         params.append(jt)
     search = getattr(args, "search", None)
     if search:
-        conditions.append("(name LIKE ? OR description LIKE ? OR client_name LIKE ? OR job_number LIKE ?)")
-        params.extend([f"%{search}%"] * 4)
+        s = f"%{search}%"
+        like_crit = (t.name.like(P()) | t.description.like(P()) | t.client_name.like(P()) | t.job_number.like(P()))
+        q_count = q_count.where(like_crit)
+        q_rows = q_rows.where(like_crit)
+        params.extend([s] * 4)
 
-    where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
     limit = getattr(args, "limit", 50) or 50
     offset = getattr(args, "offset", 0) or 0
 
-    total = conn.execute(f"SELECT COUNT(*) as cnt FROM constructclaw_job {where}", params).fetchone()["cnt"]
-    rows = conn.execute(
-        f"SELECT * FROM constructclaw_job {where} ORDER BY created_at DESC LIMIT ? OFFSET ?",
-        params + [limit, offset],
-    ).fetchall()
+    total = conn.execute(q_count.get_sql(), params).fetchone()["cnt"]
+    q_rows = q_rows.orderby(t.created_at, order=Order.desc).limit(P()).offset(P())
+    rows = conn.execute(q_rows.get_sql(), params + [limit, offset]).fetchall()
 
     ok({"jobs": [row_to_dict(r) for r in rows], "total_count": total, "limit": limit, "offset": offset})
 
@@ -232,11 +240,8 @@ def add_cost_code(conn, args):
         err(f"Job {job_id} not found")
 
     # Check duplicate code within job
-    existing = conn.execute(
-        "SELECT id FROM constructclaw_cost_code WHERE job_id = ? AND code = ?",
-        (job_id, code),
-    ).fetchone()
-    if existing:
+    q = Q.from_(_t_cc).select(_t_cc.id).where(_t_cc.job_id == P()).where(_t_cc.code == P())
+    if conn.execute(q.get_sql(), (job_id, code)).fetchone():
         err(f"Cost code {code} already exists for this job")
 
     category = getattr(args, "category", None) or "labor"
@@ -299,11 +304,8 @@ def batch_add_cost_codes(conn, args):
         if not code:
             err(f"Cost code at index {idx} missing 'code' field")
 
-        existing = conn.execute(
-            "SELECT id FROM constructclaw_cost_code WHERE job_id = ? AND code = ?",
-            (job_id, code),
-        ).fetchone()
-        if existing:
+        q = Q.from_(_t_cc).select(_t_cc.id).where(_t_cc.job_id == P()).where(_t_cc.code == P())
+        if conn.execute(q.get_sql(), (job_id, code)).fetchone():
             err(f"Cost code {code} already exists for this job")
 
         category = item.get("category", "labor")
@@ -335,25 +337,25 @@ def batch_add_cost_codes(conn, args):
 # list-cost-codes
 # ---------------------------------------------------------------------------
 def list_cost_codes(conn, args):
-    conditions, params = [], []
+    t = _t_cc
+    q = Q.from_(t).select(t.star)
+    params = []
+
     job_id = getattr(args, "job_id", None)
     if job_id:
-        conditions.append("job_id = ?")
+        q = q.where(t.job_id == P())
         params.append(job_id)
     cid = getattr(args, "company_id", None)
     if cid:
-        conditions.append("company_id = ?")
+        q = q.where(t.company_id == P())
         params.append(cid)
     category = getattr(args, "category", None)
     if category:
-        conditions.append("category = ?")
+        q = q.where(t.category == P())
         params.append(category)
 
-    where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
-    rows = conn.execute(
-        f"SELECT * FROM constructclaw_cost_code {where} ORDER BY code ASC",
-        params,
-    ).fetchall()
+    q = q.orderby(t.code, order=Order.asc)
+    rows = conn.execute(q.get_sql(), params).fetchall()
     ok({"cost_codes": [row_to_dict(r) for r in rows], "total_count": len(rows)})
 
 
@@ -417,33 +419,38 @@ def add_cost_entry(conn, args):
 # list-cost-entries
 # ---------------------------------------------------------------------------
 def list_cost_entries(conn, args):
-    conditions, params = [], []
+    t = _t_ce
+    q_count = Q.from_(t).select(fn.Count("*").as_("cnt"))
+    q_rows = Q.from_(t).select(t.star)
+    params = []
+
     job_id = getattr(args, "job_id", None)
     if job_id:
-        conditions.append("job_id = ?")
+        q_count = q_count.where(t.job_id == P())
+        q_rows = q_rows.where(t.job_id == P())
         params.append(job_id)
     cid = getattr(args, "company_id", None)
     if cid:
-        conditions.append("company_id = ?")
+        q_count = q_count.where(t.company_id == P())
+        q_rows = q_rows.where(t.company_id == P())
         params.append(cid)
     cost_code_id = getattr(args, "cost_code_id", None)
     if cost_code_id:
-        conditions.append("cost_code_id = ?")
+        q_count = q_count.where(t.cost_code_id == P())
+        q_rows = q_rows.where(t.cost_code_id == P())
         params.append(cost_code_id)
     category = getattr(args, "category", None)
     if category:
-        conditions.append("category = ?")
+        q_count = q_count.where(t.category == P())
+        q_rows = q_rows.where(t.category == P())
         params.append(category)
 
-    where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
     limit = getattr(args, "limit", 50) or 50
     offset = getattr(args, "offset", 0) or 0
 
-    total = conn.execute(f"SELECT COUNT(*) as cnt FROM constructclaw_cost_entry {where}", params).fetchone()["cnt"]
-    rows = conn.execute(
-        f"SELECT * FROM constructclaw_cost_entry {where} ORDER BY entry_date DESC LIMIT ? OFFSET ?",
-        params + [limit, offset],
-    ).fetchall()
+    total = conn.execute(q_count.get_sql(), params).fetchone()["cnt"]
+    q_rows = q_rows.orderby(t.entry_date, order=Order.desc).limit(P()).offset(P())
+    rows = conn.execute(q_rows.get_sql(), params + [limit, offset]).fetchall()
     ok({"cost_entries": [row_to_dict(r) for r in rows], "total_count": total, "limit": limit, "offset": offset})
 
 
@@ -494,11 +501,11 @@ def update_commitment(conn, args):
     cm_id = getattr(args, "commitment_id", None)
     if not cm_id:
         err("--commitment-id is required")
-    row = conn.execute(Q.from_(Table("constructclaw_commitment")).select(Table("constructclaw_commitment").star).where(Field("id") == P()).get_sql(), (cm_id,)).fetchone()
+    row = conn.execute(Q.from_(_t_cm).select(_t_cm.star).where(_t_cm.id == P()).get_sql(), (cm_id,)).fetchone()
     if not row:
         err(f"Commitment {cm_id} not found")
 
-    updates, params, changed = [], [], []
+    data, changed = {}, []
 
     for field, attr in [
         ("vendor", "vendor"), ("description", "description"),
@@ -507,26 +514,22 @@ def update_commitment(conn, args):
     ]:
         val = getattr(args, attr, None)
         if val is not None:
-            updates.append(f"{field} = ?")
-            params.append(val)
+            data[field] = val
             changed.append(field)
 
     cs = getattr(args, "commitment_status", None)
     if cs is not None:
         if cs not in VALID_COMMITMENT_STATUSES:
             err(f"Invalid commitment-status: {cs}")
-        updates.append("commitment_status = ?")
-        params.append(cs)
+        data["commitment_status"] = cs
         changed.append("commitment_status")
 
     if not changed:
         err("No fields to update")
 
-    updates.append("updated_at = datetime('now')")
-    params.append(cm_id)
-    conn.execute(
-        f"UPDATE constructclaw_commitment SET {', '.join(updates)} WHERE id = ?", params
-    )
+    data["updated_at"] = LiteralValue("datetime('now')")
+    sql, params = dynamic_update("constructclaw_commitment", data, {"id": cm_id})
+    conn.execute(sql, params)
     audit(conn, SKILL, "construction-update-commitment", "constructclaw_commitment", cm_id,
           new_values={"updated_fields": changed})
     conn.commit()
@@ -537,29 +540,33 @@ def update_commitment(conn, args):
 # list-commitments
 # ---------------------------------------------------------------------------
 def list_commitments(conn, args):
-    conditions, params = [], []
+    t = _t_cm
+    q_count = Q.from_(t).select(fn.Count("*").as_("cnt"))
+    q_rows = Q.from_(t).select(t.star)
+    params = []
+
     job_id = getattr(args, "job_id", None)
     if job_id:
-        conditions.append("job_id = ?")
+        q_count = q_count.where(t.job_id == P())
+        q_rows = q_rows.where(t.job_id == P())
         params.append(job_id)
     cid = getattr(args, "company_id", None)
     if cid:
-        conditions.append("company_id = ?")
+        q_count = q_count.where(t.company_id == P())
+        q_rows = q_rows.where(t.company_id == P())
         params.append(cid)
     cs = getattr(args, "commitment_status", None)
     if cs:
-        conditions.append("commitment_status = ?")
+        q_count = q_count.where(t.commitment_status == P())
+        q_rows = q_rows.where(t.commitment_status == P())
         params.append(cs)
 
-    where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
     limit = getattr(args, "limit", 50) or 50
     offset = getattr(args, "offset", 0) or 0
 
-    total = conn.execute(f"SELECT COUNT(*) as cnt FROM constructclaw_commitment {where}", params).fetchone()["cnt"]
-    rows = conn.execute(
-        f"SELECT * FROM constructclaw_commitment {where} ORDER BY created_at DESC LIMIT ? OFFSET ?",
-        params + [limit, offset],
-    ).fetchall()
+    total = conn.execute(q_count.get_sql(), params).fetchone()["cnt"]
+    q_rows = q_rows.orderby(t.created_at, order=Order.desc).limit(P()).offset(P())
+    rows = conn.execute(q_rows.get_sql(), params + [limit, offset]).fetchall()
     ok({"commitments": [row_to_dict(r) for r in rows], "total_count": total, "limit": limit, "offset": offset})
 
 
@@ -571,13 +578,12 @@ def job_cost_summary(conn, args):
     if not job_id:
         err("--job-id is required")
 
-    job = conn.execute(Q.from_(Table("constructclaw_job")).select(Table("constructclaw_job").star).where(Field("id") == P()).get_sql(), (job_id,)).fetchone()
+    job = conn.execute(Q.from_(_t_job).select(_t_job.star).where(_t_job.id == P()).get_sql(), (job_id,)).fetchone()
     if not job:
         err(f"Job {job_id} not found")
 
-    codes = conn.execute(
-        "SELECT * FROM constructclaw_cost_code WHERE job_id = ? ORDER BY code", (job_id,)
-    ).fetchall()
+    q = Q.from_(_t_cc).select(_t_cc.star).where(_t_cc.job_id == P()).orderby(_t_cc.code)
+    codes = conn.execute(q.get_sql(), (job_id,)).fetchall()
 
     summary = []
     total_budget = Decimal("0")
@@ -588,6 +594,7 @@ def job_cost_summary(conn, args):
         budget = _d(cc["budget_amount"])
         total_budget += budget
 
+        # PyPika: skipped — CAST(amount AS REAL) inside COALESCE/SUM
         actual_row = conn.execute(
             "SELECT COALESCE(SUM(CAST(amount AS REAL)), 0) as total FROM constructclaw_cost_entry WHERE cost_code_id = ?",
             (cc["id"],),
@@ -595,6 +602,7 @@ def job_cost_summary(conn, args):
         actual = _d(actual_row["total"])
         total_actual += actual
 
+        # PyPika: skipped — CAST + NOT IN inside aggregate
         committed_row = conn.execute(
             "SELECT COALESCE(SUM(CAST(revised_amount AS REAL)), 0) as total FROM constructclaw_commitment WHERE cost_code_id = ? AND commitment_status NOT IN ('cancelled','closed')",
             (cc["id"],),
@@ -632,12 +640,13 @@ def job_profitability(conn, args):
     if not job_id:
         err("--job-id is required")
 
-    job = conn.execute(Q.from_(Table("constructclaw_job")).select(Table("constructclaw_job").star).where(Field("id") == P()).get_sql(), (job_id,)).fetchone()
+    job = conn.execute(Q.from_(_t_job).select(_t_job.star).where(_t_job.id == P()).get_sql(), (job_id,)).fetchone()
     if not job:
         err(f"Job {job_id} not found")
 
     contract = _d(job["contract_amount"])
 
+    # PyPika: skipped — CAST inside COALESCE/SUM aggregate
     # Total billed
     billed_row = conn.execute(
         "SELECT COALESCE(SUM(CAST(current_due AS REAL)), 0) as total FROM constructclaw_progress_bill WHERE job_id = ? AND bill_status != 'rejected'",
@@ -686,13 +695,14 @@ def wip_report(conn, args):
     if not job_id:
         err("--job-id is required")
 
-    job = conn.execute(Q.from_(Table("constructclaw_job")).select(Table("constructclaw_job").star).where(Field("id") == P()).get_sql(), (job_id,)).fetchone()
+    job = conn.execute(Q.from_(_t_job).select(_t_job.star).where(_t_job.id == P()).get_sql(), (job_id,)).fetchone()
     if not job:
         err(f"Job {job_id} not found")
 
     contract = _d(job["contract_amount"])
     pct_complete = _d(job["percent_complete"])
 
+    # PyPika: skipped — CAST inside COALESCE/SUM aggregate
     # Total cost
     cost_row = conn.execute(
         "SELECT COALESCE(SUM(CAST(amount AS REAL)), 0) as total FROM constructclaw_cost_entry WHERE job_id = ?",
@@ -733,13 +743,12 @@ def job_status_report(conn, args):
     if not getattr(args, "company_id", None):
         err("--company-id is required")
 
-    jobs = conn.execute(
-        "SELECT * FROM constructclaw_job WHERE company_id = ? ORDER BY created_at DESC",
-        (args.company_id,),
-    ).fetchall()
+    q = Q.from_(_t_job).select(_t_job.star).where(_t_job.company_id == P()).orderby(_t_job.created_at, order=Order.desc)
+    jobs = conn.execute(q.get_sql(), (args.company_id,)).fetchall()
 
     report = []
     for j in jobs:
+        # PyPika: skipped — CAST inside COALESCE/SUM aggregate
         cost_row = conn.execute(
             "SELECT COALESCE(SUM(CAST(amount AS REAL)), 0) as total FROM constructclaw_cost_entry WHERE job_id = ?",
             (j["id"],),

@@ -13,9 +13,16 @@ from erpclaw_lib.naming import get_next_name, register_prefix
 from erpclaw_lib.response import ok, err, row_to_dict
 from erpclaw_lib.audit import audit
 from erpclaw_lib.cross_skill import create_invoice, submit_invoice, CrossSkillError
-from erpclaw_lib.query import Q, P, Table, Field, fn, Order, insert_row
+from erpclaw_lib.query import Q, P, Table, Field, fn, Order, insert_row, LiteralValue, dynamic_update
 
 SKILL = "constructclaw"
+
+_t_sov = Table("constructclaw_schedule_of_values")
+_t_sov_line = Table("constructclaw_sov_line")
+_t_pb = Table("constructclaw_progress_bill")
+_t_pb_line = Table("constructclaw_progress_bill_line")
+_t_ret = Table("constructclaw_retention")
+_t_job = Table("constructclaw_job")
 
 register_prefix("constructclaw_schedule_of_values", "CCSOV-")
 register_prefix("constructclaw_progress_bill", "CCPB-")
@@ -77,15 +84,13 @@ def get_schedule_of_values(conn, args):
     sov_id = getattr(args, "sov_id", None)
     if not sov_id:
         err("--sov-id is required")
-    row = conn.execute(Q.from_(Table("constructclaw_schedule_of_values")).select(Table("constructclaw_schedule_of_values").star).where(Field("id") == P()).get_sql(), (sov_id,)).fetchone()
+    row = conn.execute(Q.from_(_t_sov).select(_t_sov.star).where(_t_sov.id == P()).get_sql(), (sov_id,)).fetchone()
     if not row:
         err(f"Schedule of values {sov_id} not found")
 
     data = row_to_dict(row)
-    lines = conn.execute(
-        "SELECT * FROM constructclaw_sov_line WHERE sov_id = ? ORDER BY item_number",
-        (sov_id,),
-    ).fetchall()
+    q = Q.from_(_t_sov_line).select(_t_sov_line.star).where(_t_sov_line.sov_id == P()).orderby(_t_sov_line.item_number)
+    lines = conn.execute(q.get_sql(), (sov_id,)).fetchall()
     data["lines"] = [row_to_dict(l) for l in lines]
     ok(data)
 
@@ -94,21 +99,21 @@ def get_schedule_of_values(conn, args):
 # list-schedules-of-values
 # ---------------------------------------------------------------------------
 def list_schedules_of_values(conn, args):
-    conditions, params = [], []
+    t = _t_sov
+    q = Q.from_(t).select(t.star)
+    params = []
+
     cid = getattr(args, "company_id", None)
     if cid:
-        conditions.append("company_id = ?")
+        q = q.where(t.company_id == P())
         params.append(cid)
     job_id = getattr(args, "job_id", None)
     if job_id:
-        conditions.append("job_id = ?")
+        q = q.where(t.job_id == P())
         params.append(job_id)
 
-    where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
-    rows = conn.execute(
-        f"SELECT * FROM constructclaw_schedule_of_values {where} ORDER BY created_at DESC",
-        params,
-    ).fetchall()
+    q = q.orderby(t.created_at, order=Order.desc)
+    rows = conn.execute(q.get_sql(), params).fetchall()
     ok({"schedules_of_values": [row_to_dict(r) for r in rows], "total_count": len(rows)})
 
 
@@ -158,10 +163,8 @@ def list_sov_lines(conn, args):
     if not sov_id:
         err("--sov-id is required")
 
-    rows = conn.execute(
-        "SELECT * FROM constructclaw_sov_line WHERE sov_id = ? ORDER BY item_number",
-        (sov_id,),
-    ).fetchall()
+    q = Q.from_(_t_sov_line).select(_t_sov_line.star).where(_t_sov_line.sov_id == P()).orderby(_t_sov_line.item_number)
+    rows = conn.execute(q.get_sql(), (sov_id,)).fetchall()
     ok({"sov_lines": [row_to_dict(r) for r in rows], "total_count": len(rows)})
 
 
@@ -179,10 +182,8 @@ def add_progress_bill(conn, args):
         err(f"Job {job_id} not found")
 
     # Get next bill number
-    max_row = conn.execute(
-        "SELECT COALESCE(MAX(bill_number), 0) as mx FROM constructclaw_progress_bill WHERE job_id = ?",
-        (job_id,),
-    ).fetchone()
+    q = Q.from_(_t_pb).select(fn.Coalesce(fn.Max(_t_pb.bill_number), 0).as_("mx")).where(_t_pb.job_id == P())
+    max_row = conn.execute(q.get_sql(), (job_id,)).fetchone()
     bill_number = (max_row["mx"] or 0) + 1
 
     pb_id = str(uuid.uuid4())
@@ -192,6 +193,7 @@ def add_progress_bill(conn, args):
     total_retention = getattr(args, "total_retention", None) or "0"
 
     # Get previous bills total
+    # PyPika: skipped — CAST inside COALESCE/SUM aggregate
     prev_row = conn.execute(
         "SELECT COALESCE(SUM(CAST(current_due AS REAL)), 0) as total FROM constructclaw_progress_bill WHERE job_id = ? AND bill_status != 'rejected'",
         (job_id,),
@@ -238,15 +240,13 @@ def get_progress_bill(conn, args):
     pb_id = getattr(args, "progress_bill_id", None)
     if not pb_id:
         err("--progress-bill-id is required")
-    row = conn.execute(Q.from_(Table("constructclaw_progress_bill")).select(Table("constructclaw_progress_bill").star).where(Field("id") == P()).get_sql(), (pb_id,)).fetchone()
+    row = conn.execute(Q.from_(_t_pb).select(_t_pb.star).where(_t_pb.id == P()).get_sql(), (pb_id,)).fetchone()
     if not row:
         err(f"Progress bill {pb_id} not found")
 
     data = row_to_dict(row)
-    lines = conn.execute(
-        "SELECT * FROM constructclaw_progress_bill_line WHERE bill_id = ? ORDER BY item_number",
-        (pb_id,),
-    ).fetchall()
+    q = Q.from_(_t_pb_line).select(_t_pb_line.star).where(_t_pb_line.bill_id == P()).orderby(_t_pb_line.item_number)
+    lines = conn.execute(q.get_sql(), (pb_id,)).fetchall()
     data["lines"] = [row_to_dict(l) for l in lines]
     ok(data)
 
@@ -255,25 +255,25 @@ def get_progress_bill(conn, args):
 # list-progress-bills
 # ---------------------------------------------------------------------------
 def list_progress_bills(conn, args):
-    conditions, params = [], []
+    t = _t_pb
+    q = Q.from_(t).select(t.star)
+    params = []
+
     cid = getattr(args, "company_id", None)
     if cid:
-        conditions.append("company_id = ?")
+        q = q.where(t.company_id == P())
         params.append(cid)
     job_id = getattr(args, "job_id", None)
     if job_id:
-        conditions.append("job_id = ?")
+        q = q.where(t.job_id == P())
         params.append(job_id)
     bs = getattr(args, "bill_status", None)
     if bs:
-        conditions.append("bill_status = ?")
+        q = q.where(t.bill_status == P())
         params.append(bs)
 
-    where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
-    rows = conn.execute(
-        f"SELECT * FROM constructclaw_progress_bill {where} ORDER BY bill_number DESC",
-        params,
-    ).fetchall()
+    q = q.orderby(t.bill_number, order=Order.desc)
+    rows = conn.execute(q.get_sql(), params).fetchall()
     ok({"progress_bills": [row_to_dict(r) for r in rows], "total_count": len(rows)})
 
 
@@ -284,16 +284,16 @@ def submit_progress_bill(conn, args):
     pb_id = getattr(args, "progress_bill_id", None)
     if not pb_id:
         err("--progress-bill-id is required")
-    row = conn.execute(Q.from_(Table("constructclaw_progress_bill")).select(Table("constructclaw_progress_bill").star).where(Field("id") == P()).get_sql(), (pb_id,)).fetchone()
+    row = conn.execute(Q.from_(_t_pb).select(_t_pb.star).where(_t_pb.id == P()).get_sql(), (pb_id,)).fetchone()
     if not row:
         err(f"Progress bill {pb_id} not found")
     if row["bill_status"] != "draft":
         err(f"Progress bill must be in draft status to submit (current: {row['bill_status']})")
 
-    conn.execute(
-        "UPDATE constructclaw_progress_bill SET bill_status = 'submitted', updated_at = datetime('now') WHERE id = ?",
-        (pb_id,),
-    )
+    sql, params = dynamic_update("constructclaw_progress_bill",
+        {"bill_status": "submitted", "updated_at": LiteralValue("datetime('now')")},
+        {"id": pb_id})
+    conn.execute(sql, params)
     audit(conn, SKILL, "construction-submit-progress-bill", "constructclaw_progress_bill", pb_id,
           new_values={"bill_status": "submitted"})
     conn.commit()
@@ -314,7 +314,7 @@ def approve_progress_bill(conn, args):
     pb_id = getattr(args, "progress_bill_id", None)
     if not pb_id:
         err("--progress-bill-id is required")
-    row = conn.execute(Q.from_(Table("constructclaw_progress_bill")).select(Table("constructclaw_progress_bill").star).where(Field("id") == P()).get_sql(), (pb_id,)).fetchone()
+    row = conn.execute(Q.from_(_t_pb).select(_t_pb.star).where(_t_pb.id == P()).get_sql(), (pb_id,)).fetchone()
     if not row:
         err(f"Progress bill {pb_id} not found")
     if row["bill_status"] != "submitted":
@@ -325,7 +325,7 @@ def approve_progress_bill(conn, args):
         err(f"Cannot approve progress bill with zero or negative current_due ({current_due})")
 
     # Look up the job to get customer (client_id) and company_id
-    job = conn.execute("SELECT * FROM constructclaw_job WHERE id = ?", (row["job_id"],)).fetchone()
+    job = conn.execute(Q.from_(_t_job).select(_t_job.star).where(_t_job.id == P()).get_sql(), (row["job_id"],)).fetchone()
     if not job:
         err(f"Job {row['job_id']} not found")
 
@@ -347,10 +347,8 @@ def approve_progress_bill(conn, args):
     }]
 
     # If the bill has detail lines, include them as additional context
-    bill_lines = conn.execute(
-        "SELECT * FROM constructclaw_progress_bill_line WHERE bill_id = ? ORDER BY item_number",
-        (pb_id,),
-    ).fetchall()
+    q = Q.from_(_t_pb_line).select(_t_pb_line.star).where(_t_pb_line.bill_id == P()).orderby(_t_pb_line.item_number)
+    bill_lines = conn.execute(q.get_sql(), (pb_id,)).fetchall()
 
     if bill_lines:
         # Replace single-line with detailed SOV lines
@@ -403,14 +401,11 @@ def approve_progress_bill(conn, args):
         _sys.stderr.write(f"[constructclaw] Warning: Could not create sales invoice: {e}\n")
 
     # Update the progress bill status and link the invoice
-    conn.execute(
-        """UPDATE constructclaw_progress_bill
-           SET bill_status = 'approved',
-               sales_invoice_id = ?,
-               updated_at = datetime('now')
-           WHERE id = ?""",
-        (sales_invoice_id, pb_id),
-    )
+    sql, params = dynamic_update("constructclaw_progress_bill",
+        {"bill_status": "approved", "sales_invoice_id": sales_invoice_id,
+         "updated_at": LiteralValue("datetime('now')")},
+        {"id": pb_id})
+    conn.execute(sql, params)
 
     audit(conn, SKILL, "construction-approve-progress-bill", "constructclaw_progress_bill", pb_id,
           new_values={"bill_status": "approved", "sales_invoice_id": sales_invoice_id})
@@ -472,24 +467,25 @@ def add_retention(conn, args):
 # list-retentions
 # ---------------------------------------------------------------------------
 def list_retentions(conn, args):
-    conditions, params = [], []
+    t = _t_ret
+    q = Q.from_(t).select(t.star)
+    params = []
+
     job_id = getattr(args, "job_id", None)
     if job_id:
-        conditions.append("job_id = ?")
+        q = q.where(t.job_id == P())
         params.append(job_id)
     cid = getattr(args, "company_id", None)
     if cid:
-        conditions.append("company_id = ?")
+        q = q.where(t.company_id == P())
         params.append(cid)
     rs = getattr(args, "retention_status", None)
     if rs:
-        conditions.append("retention_status = ?")
+        q = q.where(t.retention_status == P())
         params.append(rs)
 
-    where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
-    rows = conn.execute(
-        f"SELECT * FROM constructclaw_retention {where} ORDER BY created_at DESC", params
-    ).fetchall()
+    q = q.orderby(t.created_at, order=Order.desc)
+    rows = conn.execute(q.get_sql(), params).fetchall()
     ok({"retentions": [row_to_dict(r) for r in rows], "total_count": len(rows)})
 
 
@@ -500,7 +496,7 @@ def release_retention(conn, args):
     ret_id = getattr(args, "retention_id", None)
     if not ret_id:
         err("--retention-id is required")
-    row = conn.execute(Q.from_(Table("constructclaw_retention")).select(Table("constructclaw_retention").star).where(Field("id") == P()).get_sql(), (ret_id,)).fetchone()
+    row = conn.execute(Q.from_(_t_ret).select(_t_ret.star).where(_t_ret.id == P()).get_sql(), (ret_id,)).fetchone()
     if not row:
         err(f"Retention {ret_id} not found")
     if row["retention_status"] == "released":
@@ -523,18 +519,14 @@ def release_retention(conn, args):
 
     new_status = "released" if new_balance == 0 else "partial_release"
 
-    conn.execute(
-        """UPDATE constructclaw_retention
-           SET amount_released = ?, balance = ?, retention_status = ?,
-               release_date = date('now'), updated_at = datetime('now')
-           WHERE id = ?""",
-        (
-            str(new_released.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)),
-            str(new_balance.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)),
-            new_status,
-            ret_id,
-        ),
-    )
+    sql, params = dynamic_update("constructclaw_retention", {
+        "amount_released": str(new_released.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)),
+        "balance": str(new_balance.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)),
+        "retention_status": new_status,
+        "release_date": LiteralValue("date('now')"),
+        "updated_at": LiteralValue("datetime('now')"),
+    }, {"id": ret_id})
+    conn.execute(sql, params)
     audit(conn, SKILL, "construction-release-retention", "constructclaw_retention", ret_id,
           new_values={"release_amount": str(release), "new_status": new_status})
     conn.commit()
@@ -554,14 +546,15 @@ def billing_summary(conn, args):
     if not job_id:
         err("--job-id is required")
 
-    job = conn.execute(Q.from_(Table("constructclaw_job")).select(Table("constructclaw_job").star).where(Field("id") == P()).get_sql(), (job_id,)).fetchone()
+    job = conn.execute(Q.from_(_t_job).select(_t_job.star).where(_t_job.id == P()).get_sql(), (job_id,)).fetchone()
     if not job:
         err(f"Job {job_id} not found")
 
-    bills = conn.execute(
-        "SELECT * FROM constructclaw_progress_bill WHERE job_id = ? AND bill_status != 'rejected' ORDER BY bill_number",
-        (job_id,),
-    ).fetchall()
+    q = (Q.from_(_t_pb).select(_t_pb.star)
+         .where(_t_pb.job_id == P())
+         .where(_t_pb.bill_status != P())
+         .orderby(_t_pb.bill_number))
+    bills = conn.execute(q.get_sql(), (job_id, "rejected")).fetchall()
 
     total_billed = Decimal("0")
     total_retention = Decimal("0")

@@ -12,9 +12,14 @@ sys.path.insert(0, os.path.expanduser("~/.openclaw/erpclaw/lib"))
 from erpclaw_lib.naming import get_next_name, register_prefix
 from erpclaw_lib.response import ok, err, row_to_dict
 from erpclaw_lib.audit import audit
-from erpclaw_lib.query import Q, P, Table, Field, fn, Order, insert_row
+from erpclaw_lib.query import Q, P, Table, Field, fn, Order, insert_row, LiteralValue, dynamic_update
 
 SKILL = "constructclaw"
+
+_t_sub = Table("constructclaw_subcontract")
+_t_sub_line = Table("constructclaw_subcontract_line")
+_t_pa = Table("constructclaw_pay_application")
+_t_lw = Table("constructclaw_lien_waiver")
 
 register_prefix("constructclaw_subcontract", "CCSUB-")
 register_prefix("constructclaw_pay_application", "CCPA-")
@@ -92,11 +97,11 @@ def update_subcontract(conn, args):
     sub_id = getattr(args, "subcontract_id", None)
     if not sub_id:
         err("--subcontract-id is required")
-    row = conn.execute(Q.from_(Table("constructclaw_subcontract")).select(Table("constructclaw_subcontract").star).where(Field("id") == P()).get_sql(), (sub_id,)).fetchone()
+    row = conn.execute(Q.from_(_t_sub).select(_t_sub.star).where(_t_sub.id == P()).get_sql(), (sub_id,)).fetchone()
     if not row:
         err(f"Subcontract {sub_id} not found")
 
-    updates, params, changed = [], [], []
+    data, changed = {}, []
     for field, attr in [
         ("subcontractor_name", "subcontractor_name"), ("trade", "trade"),
         ("scope_of_work", "scope_of_work"), ("original_amount", "original_amount"),
@@ -106,26 +111,22 @@ def update_subcontract(conn, args):
     ]:
         val = getattr(args, attr, None)
         if val is not None:
-            updates.append(f"{field} = ?")
-            params.append(val)
+            data[field] = val
             changed.append(field)
 
     ss = getattr(args, "subcontract_status", None)
     if ss is not None:
         if ss not in VALID_SUB_STATUSES:
             err(f"Invalid subcontract-status: {ss}")
-        updates.append("subcontract_status = ?")
-        params.append(ss)
+        data["subcontract_status"] = ss
         changed.append("subcontract_status")
 
     if not changed:
         err("No fields to update")
 
-    updates.append("updated_at = datetime('now')")
-    params.append(sub_id)
-    conn.execute(
-        f"UPDATE constructclaw_subcontract SET {', '.join(updates)} WHERE id = ?", params
-    )
+    data["updated_at"] = LiteralValue("datetime('now')")
+    sql, params = dynamic_update("constructclaw_subcontract", data, {"id": sub_id})
+    conn.execute(sql, params)
     audit(conn, SKILL, "construction-update-subcontract", "constructclaw_subcontract", sub_id,
           new_values={"updated_fields": changed})
     conn.commit()
@@ -139,15 +140,13 @@ def get_subcontract(conn, args):
     sub_id = getattr(args, "subcontract_id", None)
     if not sub_id:
         err("--subcontract-id is required")
-    row = conn.execute(Q.from_(Table("constructclaw_subcontract")).select(Table("constructclaw_subcontract").star).where(Field("id") == P()).get_sql(), (sub_id,)).fetchone()
+    row = conn.execute(Q.from_(_t_sub).select(_t_sub.star).where(_t_sub.id == P()).get_sql(), (sub_id,)).fetchone()
     if not row:
         err(f"Subcontract {sub_id} not found")
 
     data = row_to_dict(row)
-    lines = conn.execute(
-        "SELECT * FROM constructclaw_subcontract_line WHERE subcontract_id = ? ORDER BY line_number",
-        (sub_id,),
-    ).fetchall()
+    q = Q.from_(_t_sub_line).select(_t_sub_line.star).where(_t_sub_line.subcontract_id == P()).orderby(_t_sub_line.line_number)
+    lines = conn.execute(q.get_sql(), (sub_id,)).fetchall()
     data["lines"] = [row_to_dict(l) for l in lines]
     ok(data)
 
@@ -156,33 +155,40 @@ def get_subcontract(conn, args):
 # list-subcontracts
 # ---------------------------------------------------------------------------
 def list_subcontracts(conn, args):
-    conditions, params = [], []
+    t = _t_sub
+    q_count = Q.from_(t).select(fn.Count("*").as_("cnt"))
+    q_rows = Q.from_(t).select(t.star)
+    params = []
+
     cid = getattr(args, "company_id", None)
     if cid:
-        conditions.append("company_id = ?")
+        q_count = q_count.where(t.company_id == P())
+        q_rows = q_rows.where(t.company_id == P())
         params.append(cid)
     job_id = getattr(args, "job_id", None)
     if job_id:
-        conditions.append("job_id = ?")
+        q_count = q_count.where(t.job_id == P())
+        q_rows = q_rows.where(t.job_id == P())
         params.append(job_id)
     ss = getattr(args, "subcontract_status", None)
     if ss:
-        conditions.append("subcontract_status = ?")
+        q_count = q_count.where(t.subcontract_status == P())
+        q_rows = q_rows.where(t.subcontract_status == P())
         params.append(ss)
     search = getattr(args, "search", None)
     if search:
-        conditions.append("(subcontractor_name LIKE ? OR trade LIKE ?)")
-        params.extend([f"%{search}%"] * 2)
+        s = f"%{search}%"
+        like_crit = (t.subcontractor_name.like(P()) | t.trade.like(P()))
+        q_count = q_count.where(like_crit)
+        q_rows = q_rows.where(like_crit)
+        params.extend([s] * 2)
 
-    where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
     limit = getattr(args, "limit", 50) or 50
     offset = getattr(args, "offset", 0) or 0
 
-    total = conn.execute(f"SELECT COUNT(*) as cnt FROM constructclaw_subcontract {where}", params).fetchone()["cnt"]
-    rows = conn.execute(
-        f"SELECT * FROM constructclaw_subcontract {where} ORDER BY created_at DESC LIMIT ? OFFSET ?",
-        params + [limit, offset],
-    ).fetchall()
+    total = conn.execute(q_count.get_sql(), params).fetchone()["cnt"]
+    q_rows = q_rows.orderby(t.created_at, order=Order.desc).limit(P()).offset(P())
+    rows = conn.execute(q_rows.get_sql(), params + [limit, offset]).fetchall()
     ok({"subcontracts": [row_to_dict(r) for r in rows], "total_count": total,
         "limit": limit, "offset": offset})
 
@@ -210,10 +216,8 @@ def add_subcontract_line(conn, args):
         amount = str((_d(quantity) * _d(unit_cost)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
 
     line_id = str(uuid.uuid4())
-    max_row = conn.execute(
-        "SELECT COALESCE(MAX(line_number), 0) as mx FROM constructclaw_subcontract_line WHERE subcontract_id = ?",
-        (sub_id,),
-    ).fetchone()
+    q = Q.from_(_t_sub_line).select(fn.Coalesce(fn.Max(_t_sub_line.line_number), 0).as_("mx")).where(_t_sub_line.subcontract_id == P())
+    max_row = conn.execute(q.get_sql(), (sub_id,)).fetchone()
     line_number = (max_row["mx"] or 0) + 1
 
     sql, _ = insert_row("constructclaw_subcontract_line", {"id": P(), "subcontract_id": P(), "line_number": P(), "description": P(), "quantity": P(), "unit": P(), "unit_cost": P(), "amount": P(), "company_id": P()})
@@ -239,10 +243,8 @@ def list_subcontract_lines(conn, args):
     if not sub_id:
         err("--subcontract-id is required")
 
-    rows = conn.execute(
-        "SELECT * FROM constructclaw_subcontract_line WHERE subcontract_id = ? ORDER BY line_number",
-        (sub_id,),
-    ).fetchall()
+    q = Q.from_(_t_sub_line).select(_t_sub_line.star).where(_t_sub_line.subcontract_id == P()).orderby(_t_sub_line.line_number)
+    rows = conn.execute(q.get_sql(), (sub_id,)).fetchall()
     ok({"lines": [row_to_dict(r) for r in rows], "total_count": len(rows)})
 
 
@@ -253,16 +255,16 @@ def approve_subcontract(conn, args):
     sub_id = getattr(args, "subcontract_id", None)
     if not sub_id:
         err("--subcontract-id is required")
-    row = conn.execute(Q.from_(Table("constructclaw_subcontract")).select(Table("constructclaw_subcontract").star).where(Field("id") == P()).get_sql(), (sub_id,)).fetchone()
+    row = conn.execute(Q.from_(_t_sub).select(_t_sub.star).where(_t_sub.id == P()).get_sql(), (sub_id,)).fetchone()
     if not row:
         err(f"Subcontract {sub_id} not found")
     if row["subcontract_status"] not in ("draft", "pending_approval"):
         err(f"Subcontract must be draft or pending_approval to approve (current: {row['subcontract_status']})")
 
-    conn.execute(
-        "UPDATE constructclaw_subcontract SET subcontract_status = 'approved', updated_at = datetime('now') WHERE id = ?",
-        (sub_id,),
-    )
+    sql, params = dynamic_update("constructclaw_subcontract",
+        {"subcontract_status": "approved", "updated_at": LiteralValue("datetime('now')")},
+        {"id": sub_id})
+    conn.execute(sql, params)
     audit(conn, SKILL, "construction-approve-subcontract", "constructclaw_subcontract", sub_id,
           new_values={"subcontract_status": "approved"})
     conn.commit()
@@ -279,15 +281,13 @@ def add_pay_application(conn, args):
     if not sub_id:
         err("--subcontract-id is required")
 
-    sub = conn.execute(Q.from_(Table("constructclaw_subcontract")).select(Table("constructclaw_subcontract").star).where(Field("id") == P()).get_sql(), (sub_id,)).fetchone()
+    sub = conn.execute(Q.from_(_t_sub).select(_t_sub.star).where(_t_sub.id == P()).get_sql(), (sub_id,)).fetchone()
     if not sub:
         err(f"Subcontract {sub_id} not found")
 
     # Get next application number
-    max_row = conn.execute(
-        "SELECT COALESCE(MAX(application_number), 0) as mx FROM constructclaw_pay_application WHERE subcontract_id = ?",
-        (sub_id,),
-    ).fetchone()
+    q = Q.from_(_t_pa).select(fn.Coalesce(fn.Max(_t_pa.application_number), 0).as_("mx")).where(_t_pa.subcontract_id == P())
+    max_row = conn.execute(q.get_sql(), (sub_id,)).fetchone()
     app_number = (max_row["mx"] or 0) + 1
 
     pa_id = str(uuid.uuid4())
@@ -301,6 +301,7 @@ def add_pay_application(conn, args):
     retention_held = (total_earned * retention_pct / Decimal("100")).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
     # Get previous payments
+    # PyPika: skipped — CAST inside COALESCE/SUM aggregate with IN clause
     prev_row = conn.execute(
         "SELECT COALESCE(SUM(CAST(current_payment_due AS REAL)), 0) as total FROM constructclaw_pay_application WHERE subcontract_id = ? AND pay_app_status IN ('approved', 'paid')",
         (sub_id,),
@@ -356,25 +357,25 @@ def get_pay_application(conn, args):
 # list-pay-applications
 # ---------------------------------------------------------------------------
 def list_pay_applications(conn, args):
-    conditions, params = [], []
+    t = _t_pa
+    q = Q.from_(t).select(t.star)
+    params = []
+
     sub_id = getattr(args, "subcontract_id", None)
     if sub_id:
-        conditions.append("subcontract_id = ?")
+        q = q.where(t.subcontract_id == P())
         params.append(sub_id)
     cid = getattr(args, "company_id", None)
     if cid:
-        conditions.append("company_id = ?")
+        q = q.where(t.company_id == P())
         params.append(cid)
     pas = getattr(args, "pay_app_status", None)
     if pas:
-        conditions.append("pay_app_status = ?")
+        q = q.where(t.pay_app_status == P())
         params.append(pas)
 
-    where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
-    rows = conn.execute(
-        f"SELECT * FROM constructclaw_pay_application {where} ORDER BY application_number DESC",
-        params,
-    ).fetchall()
+    q = q.orderby(t.application_number, order=Order.desc)
+    rows = conn.execute(q.get_sql(), params).fetchall()
     ok({"pay_applications": [row_to_dict(r) for r in rows], "total_count": len(rows)})
 
 
@@ -385,16 +386,16 @@ def approve_pay_application(conn, args):
     pa_id = getattr(args, "pay_application_id", None)
     if not pa_id:
         err("--pay-application-id is required")
-    row = conn.execute(Q.from_(Table("constructclaw_pay_application")).select(Table("constructclaw_pay_application").star).where(Field("id") == P()).get_sql(), (pa_id,)).fetchone()
+    row = conn.execute(Q.from_(_t_pa).select(_t_pa.star).where(_t_pa.id == P()).get_sql(), (pa_id,)).fetchone()
     if not row:
         err(f"Pay application {pa_id} not found")
     if row["pay_app_status"] not in ("draft", "submitted"):
         err(f"Pay application must be draft or submitted to approve (current: {row['pay_app_status']})")
 
-    conn.execute(
-        "UPDATE constructclaw_pay_application SET pay_app_status = 'approved', updated_at = datetime('now') WHERE id = ?",
-        (pa_id,),
-    )
+    sql, params = dynamic_update("constructclaw_pay_application",
+        {"pay_app_status": "approved", "updated_at": LiteralValue("datetime('now')")},
+        {"id": pa_id})
+    conn.execute(sql, params)
     audit(conn, SKILL, "construction-approve-pay-application", "constructclaw_pay_application", pa_id,
           new_values={"pay_app_status": "approved"})
     conn.commit()
@@ -408,16 +409,16 @@ def reject_pay_application(conn, args):
     pa_id = getattr(args, "pay_application_id", None)
     if not pa_id:
         err("--pay-application-id is required")
-    row = conn.execute(Q.from_(Table("constructclaw_pay_application")).select(Table("constructclaw_pay_application").star).where(Field("id") == P()).get_sql(), (pa_id,)).fetchone()
+    row = conn.execute(Q.from_(_t_pa).select(_t_pa.star).where(_t_pa.id == P()).get_sql(), (pa_id,)).fetchone()
     if not row:
         err(f"Pay application {pa_id} not found")
     if row["pay_app_status"] not in ("draft", "submitted"):
         err(f"Pay application must be draft or submitted to reject (current: {row['pay_app_status']})")
 
-    conn.execute(
-        "UPDATE constructclaw_pay_application SET pay_app_status = 'rejected', updated_at = datetime('now') WHERE id = ?",
-        (pa_id,),
-    )
+    sql, params = dynamic_update("constructclaw_pay_application",
+        {"pay_app_status": "rejected", "updated_at": LiteralValue("datetime('now')")},
+        {"id": pa_id})
+    conn.execute(sql, params)
     audit(conn, SKILL, "construction-reject-pay-application", "constructclaw_pay_application", pa_id,
           new_values={"pay_app_status": "rejected"})
     conn.commit()
@@ -468,21 +469,21 @@ def add_lien_waiver(conn, args):
 # list-lien-waivers
 # ---------------------------------------------------------------------------
 def list_lien_waivers(conn, args):
-    conditions, params = [], []
+    t = _t_lw
+    q = Q.from_(t).select(t.star)
+    params = []
+
     sub_id = getattr(args, "subcontract_id", None)
     if sub_id:
-        conditions.append("subcontract_id = ?")
+        q = q.where(t.subcontract_id == P())
         params.append(sub_id)
     cid = getattr(args, "company_id", None)
     if cid:
-        conditions.append("company_id = ?")
+        q = q.where(t.company_id == P())
         params.append(cid)
 
-    where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
-    rows = conn.execute(
-        f"SELECT * FROM constructclaw_lien_waiver {where} ORDER BY created_at DESC",
-        params,
-    ).fetchall()
+    q = q.orderby(t.created_at, order=Order.desc)
+    rows = conn.execute(q.get_sql(), params).fetchall()
     ok({"lien_waivers": [row_to_dict(r) for r in rows], "total_count": len(rows)})
 
 
@@ -493,6 +494,7 @@ def subcontractor_aging_report(conn, args):
     if not getattr(args, "company_id", None):
         err("--company-id is required")
 
+    # PyPika: skipped — NOT IN clause with multiple status values
     subs = conn.execute(
         "SELECT * FROM constructclaw_subcontract WHERE company_id = ? AND subcontract_status NOT IN ('cancelled','terminated')",
         (args.company_id,),

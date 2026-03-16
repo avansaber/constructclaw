@@ -13,9 +13,13 @@ sys.path.insert(0, os.path.expanduser("~/.openclaw/erpclaw/lib"))
 from erpclaw_lib.naming import get_next_name, register_prefix
 from erpclaw_lib.response import ok, err, row_to_dict
 from erpclaw_lib.audit import audit
-from erpclaw_lib.query import Q, P, Table, Field, fn, Order, insert_row
+from erpclaw_lib.query import Q, P, Table, Field, fn, Order, insert_row, LiteralValue, dynamic_update
 
 SKILL = "constructclaw"
+
+_t_inc = Table("constructclaw_incident")
+_t_tt = Table("constructclaw_toolbox_talk")
+_t_sc = Table("constructclaw_safety_cert")
 
 register_prefix("constructclaw_incident", "CCINC-")
 
@@ -92,11 +96,11 @@ def update_incident(conn, args):
     inc_id = getattr(args, "incident_id", None)
     if not inc_id:
         err("--incident-id is required")
-    row = conn.execute(Q.from_(Table("constructclaw_incident")).select(Table("constructclaw_incident").star).where(Field("id") == P()).get_sql(), (inc_id,)).fetchone()
+    row = conn.execute(Q.from_(_t_inc).select(_t_inc.star).where(_t_inc.id == P()).get_sql(), (inc_id,)).fetchone()
     if not row:
         err(f"Incident {inc_id} not found")
 
-    updates, params, changed = [], [], []
+    data, changed = {}, []
     for field, attr in [
         ("incident_date", "incident_date"), ("incident_time", "incident_time"),
         ("location", "location"), ("description", "description"),
@@ -106,46 +110,39 @@ def update_incident(conn, args):
     ]:
         val = getattr(args, attr, None)
         if val is not None:
-            updates.append(f"{field} = ?")
-            params.append(val)
+            data[field] = val
             changed.append(field)
 
     it = getattr(args, "incident_type", None)
     if it is not None:
         if it not in VALID_INCIDENT_TYPES:
             err(f"Invalid incident-type: {it}")
-        updates.append("incident_type = ?")
-        params.append(it)
+        data["incident_type"] = it
         changed.append("incident_type")
 
     sev = getattr(args, "severity", None)
     if sev is not None:
         if sev not in VALID_SEVERITIES:
             err(f"Invalid severity: {sev}")
-        updates.append("severity = ?")
-        params.append(sev)
+        data["severity"] = sev
         changed.append("severity")
 
     dl = getattr(args, "days_lost", None)
     if dl is not None:
-        updates.append("days_lost = ?")
-        params.append(int(dl))
+        data["days_lost"] = int(dl)
         changed.append("days_lost")
 
     osha = getattr(args, "osha_recordable", None)
     if osha is not None:
-        updates.append("osha_recordable = ?")
-        params.append(int(osha))
+        data["osha_recordable"] = int(osha)
         changed.append("osha_recordable")
 
     if not changed:
         err("No fields to update")
 
-    updates.append("updated_at = datetime('now')")
-    params.append(inc_id)
-    conn.execute(
-        f"UPDATE constructclaw_incident SET {', '.join(updates)} WHERE id = ?", params
-    )
+    data["updated_at"] = LiteralValue("datetime('now')")
+    sql, params = dynamic_update("constructclaw_incident", data, {"id": inc_id})
+    conn.execute(sql, params)
     audit(conn, SKILL, "construction-update-incident", "constructclaw_incident", inc_id,
           new_values={"updated_fields": changed})
     conn.commit()
@@ -169,37 +166,45 @@ def get_incident(conn, args):
 # list-incidents
 # ---------------------------------------------------------------------------
 def list_incidents(conn, args):
-    conditions, params = [], []
+    t = _t_inc
+    q_count = Q.from_(t).select(fn.Count("*").as_("cnt"))
+    q_rows = Q.from_(t).select(t.star)
+    params = []
+
     cid = getattr(args, "company_id", None)
     if cid:
-        conditions.append("company_id = ?")
+        q_count = q_count.where(t.company_id == P())
+        q_rows = q_rows.where(t.company_id == P())
         params.append(cid)
     job_id = getattr(args, "job_id", None)
     if job_id:
-        conditions.append("job_id = ?")
+        q_count = q_count.where(t.job_id == P())
+        q_rows = q_rows.where(t.job_id == P())
         params.append(job_id)
     it = getattr(args, "incident_type", None)
     if it:
-        conditions.append("incident_type = ?")
+        q_count = q_count.where(t.incident_type == P())
+        q_rows = q_rows.where(t.incident_type == P())
         params.append(it)
     ist = getattr(args, "incident_status", None)
     if ist:
-        conditions.append("incident_status = ?")
+        q_count = q_count.where(t.incident_status == P())
+        q_rows = q_rows.where(t.incident_status == P())
         params.append(ist)
     search = getattr(args, "search", None)
     if search:
-        conditions.append("(description LIKE ? OR injured_party LIKE ? OR location LIKE ?)")
-        params.extend([f"%{search}%"] * 3)
+        s = f"%{search}%"
+        like_crit = (t.description.like(P()) | t.injured_party.like(P()) | t.location.like(P()))
+        q_count = q_count.where(like_crit)
+        q_rows = q_rows.where(like_crit)
+        params.extend([s] * 3)
 
-    where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
     limit = getattr(args, "limit", 50) or 50
     offset = getattr(args, "offset", 0) or 0
 
-    total = conn.execute(f"SELECT COUNT(*) as cnt FROM constructclaw_incident {where}", params).fetchone()["cnt"]
-    rows = conn.execute(
-        f"SELECT * FROM constructclaw_incident {where} ORDER BY incident_date DESC LIMIT ? OFFSET ?",
-        params + [limit, offset],
-    ).fetchall()
+    total = conn.execute(q_count.get_sql(), params).fetchone()["cnt"]
+    q_rows = q_rows.orderby(t.incident_date, order=Order.desc).limit(P()).offset(P())
+    rows = conn.execute(q_rows.get_sql(), params + [limit, offset]).fetchall()
     ok({"incidents": [row_to_dict(r) for r in rows], "total_count": total,
         "limit": limit, "offset": offset})
 
@@ -211,16 +216,16 @@ def close_incident(conn, args):
     inc_id = getattr(args, "incident_id", None)
     if not inc_id:
         err("--incident-id is required")
-    row = conn.execute(Q.from_(Table("constructclaw_incident")).select(Table("constructclaw_incident").star).where(Field("id") == P()).get_sql(), (inc_id,)).fetchone()
+    row = conn.execute(Q.from_(_t_inc).select(_t_inc.star).where(_t_inc.id == P()).get_sql(), (inc_id,)).fetchone()
     if not row:
         err(f"Incident {inc_id} not found")
     if row["incident_status"] == "closed":
         err("Incident is already closed")
 
-    conn.execute(
-        "UPDATE constructclaw_incident SET incident_status = 'closed', updated_at = datetime('now') WHERE id = ?",
-        (inc_id,),
-    )
+    sql, params = dynamic_update("constructclaw_incident",
+        {"incident_status": "closed", "updated_at": LiteralValue("datetime('now')")},
+        {"id": inc_id})
+    conn.execute(sql, params)
     audit(conn, SKILL, "construction-close-incident", "constructclaw_incident", inc_id,
           new_values={"incident_status": "closed"})
     conn.commit()
@@ -268,20 +273,21 @@ def add_toolbox_talk(conn, args):
 # list-toolbox-talks
 # ---------------------------------------------------------------------------
 def list_toolbox_talks(conn, args):
-    conditions, params = [], []
+    t = _t_tt
+    q = Q.from_(t).select(t.star)
+    params = []
+
     cid = getattr(args, "company_id", None)
     if cid:
-        conditions.append("company_id = ?")
+        q = q.where(t.company_id == P())
         params.append(cid)
     job_id = getattr(args, "job_id", None)
     if job_id:
-        conditions.append("job_id = ?")
+        q = q.where(t.job_id == P())
         params.append(job_id)
 
-    where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
-    rows = conn.execute(
-        f"SELECT * FROM constructclaw_toolbox_talk {where} ORDER BY talk_date DESC", params
-    ).fetchall()
+    q = q.orderby(t.talk_date, order=Order.desc)
+    rows = conn.execute(q.get_sql(), params).fetchall()
     ok({"toolbox_talks": [row_to_dict(r) for r in rows], "total_count": len(rows)})
 
 
@@ -323,28 +329,29 @@ def add_safety_cert(conn, args):
 # list-safety-certs
 # ---------------------------------------------------------------------------
 def list_safety_certs(conn, args):
-    conditions, params = [], []
+    t = _t_sc
+    q = Q.from_(t).select(t.star)
+    params = []
+
     cid = getattr(args, "company_id", None)
     if cid:
-        conditions.append("company_id = ?")
+        q = q.where(t.company_id == P())
         params.append(cid)
     job_id = getattr(args, "job_id", None)
     if job_id:
-        conditions.append("job_id = ?")
+        q = q.where(t.job_id == P())
         params.append(job_id)
     wn = getattr(args, "worker_name", None)
     if wn:
-        conditions.append("worker_name = ?")
+        q = q.where(t.worker_name == P())
         params.append(wn)
     cs = getattr(args, "cert_status", None)
     if cs:
-        conditions.append("cert_status = ?")
+        q = q.where(t.cert_status == P())
         params.append(cs)
 
-    where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
-    rows = conn.execute(
-        f"SELECT * FROM constructclaw_safety_cert {where} ORDER BY expiry_date ASC", params
-    ).fetchall()
+    q = q.orderby(t.expiry_date, order=Order.asc)
+    rows = conn.execute(q.get_sql(), params).fetchall()
     ok({"safety_certs": [row_to_dict(r) for r in rows], "total_count": len(rows)})
 
 
@@ -355,16 +362,16 @@ def expire_safety_cert(conn, args):
     sc_id = getattr(args, "safety_cert_id", None)
     if not sc_id:
         err("--safety-cert-id is required")
-    row = conn.execute(Q.from_(Table("constructclaw_safety_cert")).select(Table("constructclaw_safety_cert").star).where(Field("id") == P()).get_sql(), (sc_id,)).fetchone()
+    row = conn.execute(Q.from_(_t_sc).select(_t_sc.star).where(_t_sc.id == P()).get_sql(), (sc_id,)).fetchone()
     if not row:
         err(f"Safety cert {sc_id} not found")
     if row["cert_status"] in ("expired", "revoked"):
         err(f"Cert is already {row['cert_status']}")
 
-    conn.execute(
-        "UPDATE constructclaw_safety_cert SET cert_status = 'expired', updated_at = datetime('now') WHERE id = ?",
-        (sc_id,),
-    )
+    sql, params = dynamic_update("constructclaw_safety_cert",
+        {"cert_status": "expired", "updated_at": LiteralValue("datetime('now')")},
+        {"id": sc_id})
+    conn.execute(sql, params)
     audit(conn, SKILL, "construction-expire-safety-cert", "constructclaw_safety_cert", sc_id,
           new_values={"cert_status": "expired"})
     conn.commit()

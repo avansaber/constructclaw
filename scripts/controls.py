@@ -12,9 +12,12 @@ from decimal import Decimal, ROUND_HALF_UP
 sys.path.insert(0, os.path.expanduser("~/.openclaw/erpclaw/lib"))
 from erpclaw_lib.response import ok, err, row_to_dict
 from erpclaw_lib.audit import audit
-from erpclaw_lib.query import Q, P, Table, Field, fn, Order, insert_row
+from erpclaw_lib.query import Q, P, Table, Field, fn, Order, insert_row, LiteralValue, dynamic_update
 
 SKILL = "constructclaw"
+
+_t_ev = Table("constructclaw_earned_value")
+_t_job = Table("constructclaw_job")
 
 
 def _d(val, default="0"):
@@ -61,21 +64,21 @@ def add_earned_value(conn, args):
 # list-earned-values
 # ---------------------------------------------------------------------------
 def list_earned_values(conn, args):
-    conditions, params = [], []
+    t = _t_ev
+    q = Q.from_(t).select(t.star)
+    params = []
+
     job_id = getattr(args, "job_id", None)
     if job_id:
-        conditions.append("job_id = ?")
+        q = q.where(t.job_id == P())
         params.append(job_id)
     cid = getattr(args, "company_id", None)
     if cid:
-        conditions.append("company_id = ?")
+        q = q.where(t.company_id == P())
         params.append(cid)
 
-    where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
-    rows = conn.execute(
-        f"SELECT * FROM constructclaw_earned_value {where} ORDER BY period_date DESC",
-        params,
-    ).fetchall()
+    q = q.orderby(t.period_date, order=Order.desc)
+    rows = conn.execute(q.get_sql(), params).fetchall()
     ok({"earned_values": [row_to_dict(r) for r in rows], "total_count": len(rows)})
 
 
@@ -88,10 +91,8 @@ def calculate_ev_metrics(conn, args):
         err("--job-id is required")
 
     # Get latest earned value data point
-    row = conn.execute(
-        "SELECT * FROM constructclaw_earned_value WHERE job_id = ? ORDER BY period_date DESC LIMIT 1",
-        (job_id,),
-    ).fetchone()
+    q = Q.from_(_t_ev).select(_t_ev.star).where(_t_ev.job_id == P()).orderby(_t_ev.period_date, order=Order.desc).limit(1)
+    row = conn.execute(q.get_sql(), (job_id,)).fetchone()
 
     if not row:
         err(f"No earned value data found for job {job_id}")
@@ -199,7 +200,7 @@ def cost_forecast(conn, args):
     if not job_id:
         err("--job-id is required")
 
-    job = conn.execute(Q.from_(Table("constructclaw_job")).select(Table("constructclaw_job").star).where(Field("id") == P()).get_sql(), (job_id,)).fetchone()
+    job = conn.execute(Q.from_(_t_job).select(_t_job.star).where(_t_job.id == P()).get_sql(), (job_id,)).fetchone()
     if not job:
         err(f"Job {job_id} not found")
 

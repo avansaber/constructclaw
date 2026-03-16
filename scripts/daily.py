@@ -13,9 +13,13 @@ sys.path.insert(0, os.path.expanduser("~/.openclaw/erpclaw/lib"))
 from erpclaw_lib.naming import get_next_name, register_prefix
 from erpclaw_lib.response import ok, err, row_to_dict
 from erpclaw_lib.audit import audit
-from erpclaw_lib.query import Q, P, Table, Field, fn, Order, insert_row
+from erpclaw_lib.query import Q, P, Table, Field, fn, Order, insert_row, LiteralValue, dynamic_update
 
 SKILL = "constructclaw"
+
+_t_dr = Table("constructclaw_daily_report")
+_t_dl = Table("constructclaw_daily_labor")
+_t_dm = Table("constructclaw_daily_material")
 
 register_prefix("constructclaw_daily_report", "CCDR-")
 
@@ -76,13 +80,13 @@ def update_daily_report(conn, args):
     dr_id = getattr(args, "daily_report_id", None)
     if not dr_id:
         err("--daily-report-id is required")
-    row = conn.execute(Q.from_(Table("constructclaw_daily_report")).select(Table("constructclaw_daily_report").star).where(Field("id") == P()).get_sql(), (dr_id,)).fetchone()
+    row = conn.execute(Q.from_(_t_dr).select(_t_dr.star).where(_t_dr.id == P()).get_sql(), (dr_id,)).fetchone()
     if not row:
         err(f"Daily report {dr_id} not found")
     if row["report_status"] != "draft":
         err(f"Daily report must be in draft status to update (current: {row['report_status']})")
 
-    updates, params, changed = [], [], []
+    data, changed = {}, []
     for field, attr in [
         ("report_date", "report_date"), ("superintendent", "superintendent"),
         ("weather", "weather"), ("temperature_high", "temperature_high"),
@@ -91,18 +95,15 @@ def update_daily_report(conn, args):
     ]:
         val = getattr(args, attr, None)
         if val is not None:
-            updates.append(f"{field} = ?")
-            params.append(val)
+            data[field] = val
             changed.append(field)
 
     if not changed:
         err("No fields to update")
 
-    updates.append("updated_at = datetime('now')")
-    params.append(dr_id)
-    conn.execute(
-        f"UPDATE constructclaw_daily_report SET {', '.join(updates)} WHERE id = ?", params
-    )
+    data["updated_at"] = LiteralValue("datetime('now')")
+    sql, params = dynamic_update("constructclaw_daily_report", data, {"id": dr_id})
+    conn.execute(sql, params)
     audit(conn, SKILL, "construction-update-daily-report", "constructclaw_daily_report", dr_id,
           new_values={"updated_fields": changed})
     conn.commit()
@@ -116,24 +117,20 @@ def get_daily_report(conn, args):
     dr_id = getattr(args, "daily_report_id", None)
     if not dr_id:
         err("--daily-report-id is required")
-    row = conn.execute(Q.from_(Table("constructclaw_daily_report")).select(Table("constructclaw_daily_report").star).where(Field("id") == P()).get_sql(), (dr_id,)).fetchone()
+    row = conn.execute(Q.from_(_t_dr).select(_t_dr.star).where(_t_dr.id == P()).get_sql(), (dr_id,)).fetchone()
     if not row:
         err(f"Daily report {dr_id} not found")
 
     data = row_to_dict(row)
 
     # Attach labor entries
-    labor = conn.execute(
-        "SELECT * FROM constructclaw_daily_labor WHERE daily_report_id = ? ORDER BY created_at",
-        (dr_id,),
-    ).fetchall()
+    q = Q.from_(_t_dl).select(_t_dl.star).where(_t_dl.daily_report_id == P()).orderby(_t_dl.created_at)
+    labor = conn.execute(q.get_sql(), (dr_id,)).fetchall()
     data["labor_entries"] = [row_to_dict(l) for l in labor]
 
     # Attach material deliveries
-    materials = conn.execute(
-        "SELECT * FROM constructclaw_daily_material WHERE daily_report_id = ? ORDER BY created_at",
-        (dr_id,),
-    ).fetchall()
+    q = Q.from_(_t_dm).select(_t_dm.star).where(_t_dm.daily_report_id == P()).orderby(_t_dm.created_at)
+    materials = conn.execute(q.get_sql(), (dr_id,)).fetchall()
     data["material_entries"] = [row_to_dict(m) for m in materials]
 
     ok(data)
@@ -143,33 +140,40 @@ def get_daily_report(conn, args):
 # list-daily-reports
 # ---------------------------------------------------------------------------
 def list_daily_reports(conn, args):
-    conditions, params = [], []
+    t = _t_dr
+    q_count = Q.from_(t).select(fn.Count("*").as_("cnt"))
+    q_rows = Q.from_(t).select(t.star)
+    params = []
+
     cid = getattr(args, "company_id", None)
     if cid:
-        conditions.append("company_id = ?")
+        q_count = q_count.where(t.company_id == P())
+        q_rows = q_rows.where(t.company_id == P())
         params.append(cid)
     job_id = getattr(args, "job_id", None)
     if job_id:
-        conditions.append("job_id = ?")
+        q_count = q_count.where(t.job_id == P())
+        q_rows = q_rows.where(t.job_id == P())
         params.append(job_id)
     rs = getattr(args, "report_status", None)
     if rs:
-        conditions.append("report_status = ?")
+        q_count = q_count.where(t.report_status == P())
+        q_rows = q_rows.where(t.report_status == P())
         params.append(rs)
     search = getattr(args, "search", None)
     if search:
-        conditions.append("(superintendent LIKE ? OR work_description LIKE ? OR notes LIKE ?)")
-        params.extend([f"%{search}%"] * 3)
+        s = f"%{search}%"
+        like_crit = (t.superintendent.like(P()) | t.work_description.like(P()) | t.notes.like(P()))
+        q_count = q_count.where(like_crit)
+        q_rows = q_rows.where(like_crit)
+        params.extend([s] * 3)
 
-    where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
     limit = getattr(args, "limit", 50) or 50
     offset = getattr(args, "offset", 0) or 0
 
-    total = conn.execute(f"SELECT COUNT(*) as cnt FROM constructclaw_daily_report {where}", params).fetchone()["cnt"]
-    rows = conn.execute(
-        f"SELECT * FROM constructclaw_daily_report {where} ORDER BY report_date DESC LIMIT ? OFFSET ?",
-        params + [limit, offset],
-    ).fetchall()
+    total = conn.execute(q_count.get_sql(), params).fetchone()["cnt"]
+    q_rows = q_rows.orderby(t.report_date, order=Order.desc).limit(P()).offset(P())
+    rows = conn.execute(q_rows.get_sql(), params + [limit, offset]).fetchall()
     ok({"daily_reports": [row_to_dict(r) for r in rows], "total_count": total,
         "limit": limit, "offset": offset})
 
@@ -181,16 +185,16 @@ def submit_daily_report(conn, args):
     dr_id = getattr(args, "daily_report_id", None)
     if not dr_id:
         err("--daily-report-id is required")
-    row = conn.execute(Q.from_(Table("constructclaw_daily_report")).select(Table("constructclaw_daily_report").star).where(Field("id") == P()).get_sql(), (dr_id,)).fetchone()
+    row = conn.execute(Q.from_(_t_dr).select(_t_dr.star).where(_t_dr.id == P()).get_sql(), (dr_id,)).fetchone()
     if not row:
         err(f"Daily report {dr_id} not found")
     if row["report_status"] != "draft":
         err(f"Daily report must be in draft status to submit (current: {row['report_status']})")
 
-    conn.execute(
-        "UPDATE constructclaw_daily_report SET report_status = 'submitted', updated_at = datetime('now') WHERE id = ?",
-        (dr_id,),
-    )
+    sql, params = dynamic_update("constructclaw_daily_report",
+        {"report_status": "submitted", "updated_at": LiteralValue("datetime('now')")},
+        {"id": dr_id})
+    conn.execute(sql, params)
     audit(conn, SKILL, "construction-submit-daily-report", "constructclaw_daily_report", dr_id,
           new_values={"report_status": "submitted"})
     conn.commit()
@@ -237,10 +241,8 @@ def list_daily_labor(conn, args):
     if not dr_id:
         err("--daily-report-id is required")
 
-    rows = conn.execute(
-        "SELECT * FROM constructclaw_daily_labor WHERE daily_report_id = ? ORDER BY created_at",
-        (dr_id,),
-    ).fetchall()
+    q = Q.from_(_t_dl).select(_t_dl.star).where(_t_dl.daily_report_id == P()).orderby(_t_dl.created_at)
+    rows = conn.execute(q.get_sql(), (dr_id,)).fetchall()
     ok({"daily_labor": [row_to_dict(r) for r in rows], "total_count": len(rows)})
 
 
@@ -286,10 +288,8 @@ def list_daily_materials(conn, args):
     if not dr_id:
         err("--daily-report-id is required")
 
-    rows = conn.execute(
-        "SELECT * FROM constructclaw_daily_material WHERE daily_report_id = ? ORDER BY created_at",
-        (dr_id,),
-    ).fetchall()
+    q = Q.from_(_t_dm).select(_t_dm.star).where(_t_dm.daily_report_id == P()).orderby(_t_dm.created_at)
+    rows = conn.execute(q.get_sql(), (dr_id,)).fetchall()
     ok({"daily_materials": [row_to_dict(r) for r in rows], "total_count": len(rows)})
 
 
