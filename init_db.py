@@ -17,9 +17,8 @@ DB_PATH = os.environ.get(
 def init_constructclaw_schema(db_path: str = DB_PATH) -> dict:
     """Create construction management tables and indexes."""
     conn = sqlite3.connect(db_path)
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA foreign_keys=ON")
-    conn.execute("PRAGMA busy_timeout=5000")
+    from erpclaw_lib.db import setup_pragmas
+    setup_pragmas(conn)
 
     tables_created = 0
     indexes_created = 0
@@ -56,8 +55,8 @@ def init_constructclaw_schema(db_path: str = DB_PATH) -> dict:
             percent_complete    TEXT DEFAULT '0',
             notes               TEXT,
             company_id          TEXT NOT NULL REFERENCES company(id) ON DELETE RESTRICT,
-            created_at          TEXT DEFAULT (datetime('now')),
-            updated_at          TEXT DEFAULT (datetime('now'))
+            created_at          TEXT DEFAULT CURRENT_TIMESTAMP,
+            updated_at          TEXT DEFAULT CURRENT_TIMESTAMP
         )
     """)
     tables_created += 1
@@ -82,7 +81,7 @@ def init_constructclaw_schema(db_path: str = DB_PATH) -> dict:
             budget_hours        TEXT DEFAULT '0',
             is_active           INTEGER NOT NULL DEFAULT 1 CHECK(is_active IN (0,1)),
             company_id          TEXT NOT NULL REFERENCES company(id) ON DELETE RESTRICT,
-            created_at          TEXT DEFAULT (datetime('now'))
+            created_at          TEXT DEFAULT CURRENT_TIMESTAMP
         )
     """)
     tables_created += 1
@@ -100,7 +99,7 @@ def init_constructclaw_schema(db_path: str = DB_PATH) -> dict:
             id                  TEXT PRIMARY KEY,
             job_id              TEXT NOT NULL REFERENCES constructclaw_job(id) ON DELETE RESTRICT,
             cost_code_id        TEXT REFERENCES constructclaw_cost_code(id) ON DELETE SET NULL,
-            entry_date          TEXT NOT NULL DEFAULT (date('now')),
+            entry_date          TEXT NOT NULL DEFAULT CURRENT_DATE,
             category            TEXT NOT NULL DEFAULT 'labor'
                                 CHECK(category IN ('labor','material','equipment','subcontract','overhead','other')),
             description         TEXT,
@@ -111,7 +110,7 @@ def init_constructclaw_schema(db_path: str = DB_PATH) -> dict:
             amount              TEXT NOT NULL DEFAULT '0',
             hours               TEXT DEFAULT '0',
             company_id          TEXT NOT NULL REFERENCES company(id) ON DELETE RESTRICT,
-            created_at          TEXT DEFAULT (datetime('now'))
+            created_at          TEXT DEFAULT CURRENT_TIMESTAMP
         )
     """)
     tables_created += 1
@@ -140,8 +139,8 @@ def init_constructclaw_schema(db_path: str = DB_PATH) -> dict:
             commitment_status   TEXT NOT NULL DEFAULT 'draft'
                                 CHECK(commitment_status IN ('draft','approved','open','closed','cancelled')),
             company_id          TEXT NOT NULL REFERENCES company(id) ON DELETE RESTRICT,
-            created_at          TEXT DEFAULT (datetime('now')),
-            updated_at          TEXT DEFAULT (datetime('now'))
+            created_at          TEXT DEFAULT CURRENT_TIMESTAMP,
+            updated_at          TEXT DEFAULT CURRENT_TIMESTAMP
         )
     """)
     tables_created += 1
@@ -162,7 +161,7 @@ def init_constructclaw_schema(db_path: str = DB_PATH) -> dict:
             name                TEXT NOT NULL,
             client_name         TEXT,
             description         TEXT,
-            estimate_date       TEXT NOT NULL DEFAULT (date('now')),
+            estimate_date       TEXT NOT NULL DEFAULT CURRENT_DATE,
             due_date            TEXT,
             total_amount        TEXT NOT NULL DEFAULT '0',
             markup_pct          TEXT DEFAULT '0',
@@ -172,8 +171,8 @@ def init_constructclaw_schema(db_path: str = DB_PATH) -> dict:
                                 CHECK(estimate_status IN ('draft','submitted','won','lost','revised','cancelled')),
             notes               TEXT,
             company_id          TEXT NOT NULL REFERENCES company(id) ON DELETE RESTRICT,
-            created_at          TEXT DEFAULT (datetime('now')),
-            updated_at          TEXT DEFAULT (datetime('now'))
+            created_at          TEXT DEFAULT CURRENT_TIMESTAMP,
+            updated_at          TEXT DEFAULT CURRENT_TIMESTAMP
         )
     """)
     tables_created += 1
@@ -199,7 +198,7 @@ def init_constructclaw_schema(db_path: str = DB_PATH) -> dict:
             amount              TEXT NOT NULL DEFAULT '0',
             notes               TEXT,
             company_id          TEXT NOT NULL REFERENCES company(id) ON DELETE RESTRICT,
-            created_at          TEXT DEFAULT (datetime('now'))
+            created_at          TEXT DEFAULT CURRENT_TIMESTAMP
         )
     """)
     tables_created += 1
@@ -219,15 +218,15 @@ def init_constructclaw_schema(db_path: str = DB_PATH) -> dict:
             bid_number          TEXT,
             bidder_name         TEXT NOT NULL,
             bid_amount          TEXT NOT NULL DEFAULT '0',
-            bid_date            TEXT NOT NULL DEFAULT (date('now')),
+            bid_date            TEXT NOT NULL DEFAULT CURRENT_DATE,
             scope_description   TEXT,
             exclusions          TEXT,
             bid_status          TEXT NOT NULL DEFAULT 'submitted'
                                 CHECK(bid_status IN ('submitted','under_review','awarded','rejected','withdrawn')),
             notes               TEXT,
             company_id          TEXT NOT NULL REFERENCES company(id) ON DELETE RESTRICT,
-            created_at          TEXT DEFAULT (datetime('now')),
-            updated_at          TEXT DEFAULT (datetime('now'))
+            created_at          TEXT DEFAULT CURRENT_TIMESTAMP,
+            updated_at          TEXT DEFAULT CURRENT_TIMESTAMP
         )
     """)
     tables_created += 1
@@ -259,8 +258,8 @@ def init_constructclaw_schema(db_path: str = DB_PATH) -> dict:
                                 CHECK(subcontract_status IN ('draft','pending_approval','approved','active','on_hold','complete','terminated','cancelled')),
             notes               TEXT,
             company_id          TEXT NOT NULL REFERENCES company(id) ON DELETE RESTRICT,
-            created_at          TEXT DEFAULT (datetime('now')),
-            updated_at          TEXT DEFAULT (datetime('now'))
+            created_at          TEXT DEFAULT CURRENT_TIMESTAMP,
+            updated_at          TEXT DEFAULT CURRENT_TIMESTAMP
         )
     """)
     tables_created += 1
@@ -283,7 +282,7 @@ def init_constructclaw_schema(db_path: str = DB_PATH) -> dict:
             unit_cost           TEXT NOT NULL DEFAULT '0',
             amount              TEXT NOT NULL DEFAULT '0',
             company_id          TEXT NOT NULL REFERENCES company(id) ON DELETE RESTRICT,
-            created_at          TEXT DEFAULT (datetime('now'))
+            created_at          TEXT DEFAULT CURRENT_TIMESTAMP
         )
     """)
     tables_created += 1
@@ -312,8 +311,8 @@ def init_constructclaw_schema(db_path: str = DB_PATH) -> dict:
                                 CHECK(pay_app_status IN ('draft','submitted','approved','rejected','paid')),
             notes               TEXT,
             company_id          TEXT NOT NULL REFERENCES company(id) ON DELETE RESTRICT,
-            created_at          TEXT DEFAULT (datetime('now')),
-            updated_at          TEXT DEFAULT (datetime('now'))
+            created_at          TEXT DEFAULT CURRENT_TIMESTAMP,
+            updated_at          TEXT DEFAULT CURRENT_TIMESTAMP
         )
     """)
     tables_created += 1
@@ -339,7 +338,7 @@ def init_constructclaw_schema(db_path: str = DB_PATH) -> dict:
                                 CHECK(waiver_status IN ('pending','received','verified')),
             notes               TEXT,
             company_id          TEXT NOT NULL REFERENCES company(id) ON DELETE RESTRICT,
-            created_at          TEXT DEFAULT (datetime('now'))
+            created_at          TEXT DEFAULT CURRENT_TIMESTAMP
         )
     """)
     tables_created += 1
@@ -364,8 +363,8 @@ def init_constructclaw_schema(db_path: str = DB_PATH) -> dict:
                                 CHECK(sov_status IN ('draft','approved','active','closed')),
             notes               TEXT,
             company_id          TEXT NOT NULL REFERENCES company(id) ON DELETE RESTRICT,
-            created_at          TEXT DEFAULT (datetime('now')),
-            updated_at          TEXT DEFAULT (datetime('now'))
+            created_at          TEXT DEFAULT CURRENT_TIMESTAMP,
+            updated_at          TEXT DEFAULT CURRENT_TIMESTAMP
         )
     """)
     tables_created += 1
@@ -391,7 +390,7 @@ def init_constructclaw_schema(db_path: str = DB_PATH) -> dict:
             balance_to_finish   TEXT NOT NULL DEFAULT '0',
             retention_pct       TEXT DEFAULT '10',
             company_id          TEXT NOT NULL REFERENCES company(id) ON DELETE RESTRICT,
-            created_at          TEXT DEFAULT (datetime('now'))
+            created_at          TEXT DEFAULT CURRENT_TIMESTAMP
         )
     """)
     tables_created += 1
@@ -420,8 +419,8 @@ def init_constructclaw_schema(db_path: str = DB_PATH) -> dict:
             sales_invoice_id    TEXT,
             notes               TEXT,
             company_id          TEXT NOT NULL REFERENCES company(id) ON DELETE RESTRICT,
-            created_at          TEXT DEFAULT (datetime('now')),
-            updated_at          TEXT DEFAULT (datetime('now'))
+            created_at          TEXT DEFAULT CURRENT_TIMESTAMP,
+            updated_at          TEXT DEFAULT CURRENT_TIMESTAMP
         )
     """)
     tables_created += 1
@@ -450,7 +449,7 @@ def init_constructclaw_schema(db_path: str = DB_PATH) -> dict:
             balance_to_finish   TEXT NOT NULL DEFAULT '0',
             retention_amount    TEXT NOT NULL DEFAULT '0',
             company_id          TEXT NOT NULL REFERENCES company(id) ON DELETE RESTRICT,
-            created_at          TEXT DEFAULT (datetime('now'))
+            created_at          TEXT DEFAULT CURRENT_TIMESTAMP
         )
     """)
     tables_created += 1
@@ -476,8 +475,8 @@ def init_constructclaw_schema(db_path: str = DB_PATH) -> dict:
                                 CHECK(retention_status IN ('held','partial_release','released')),
             notes               TEXT,
             company_id          TEXT NOT NULL REFERENCES company(id) ON DELETE RESTRICT,
-            created_at          TEXT DEFAULT (datetime('now')),
-            updated_at          TEXT DEFAULT (datetime('now'))
+            created_at          TEXT DEFAULT CURRENT_TIMESTAMP,
+            updated_at          TEXT DEFAULT CURRENT_TIMESTAMP
         )
     """)
     tables_created += 1
@@ -494,7 +493,7 @@ def init_constructclaw_schema(db_path: str = DB_PATH) -> dict:
             id                  TEXT PRIMARY KEY,
             naming_series       TEXT,
             job_id              TEXT NOT NULL REFERENCES constructclaw_job(id) ON DELETE RESTRICT,
-            report_date         TEXT NOT NULL DEFAULT (date('now')),
+            report_date         TEXT NOT NULL DEFAULT CURRENT_DATE,
             superintendent      TEXT,
             weather             TEXT,
             temperature_high    TEXT,
@@ -506,8 +505,8 @@ def init_constructclaw_schema(db_path: str = DB_PATH) -> dict:
                                 CHECK(report_status IN ('draft','submitted','approved')),
             notes               TEXT,
             company_id          TEXT NOT NULL REFERENCES company(id) ON DELETE RESTRICT,
-            created_at          TEXT DEFAULT (datetime('now')),
-            updated_at          TEXT DEFAULT (datetime('now'))
+            created_at          TEXT DEFAULT CURRENT_TIMESTAMP,
+            updated_at          TEXT DEFAULT CURRENT_TIMESTAMP
         )
     """)
     tables_created += 1
@@ -528,7 +527,7 @@ def init_constructclaw_schema(db_path: str = DB_PATH) -> dict:
             hours               TEXT NOT NULL DEFAULT '0',
             description         TEXT,
             company_id          TEXT NOT NULL REFERENCES company(id) ON DELETE RESTRICT,
-            created_at          TEXT DEFAULT (datetime('now'))
+            created_at          TEXT DEFAULT CURRENT_TIMESTAMP
         )
     """)
     tables_created += 1
@@ -549,7 +548,7 @@ def init_constructclaw_schema(db_path: str = DB_PATH) -> dict:
             supplier            TEXT,
             delivery_ticket     TEXT,
             company_id          TEXT NOT NULL REFERENCES company(id) ON DELETE RESTRICT,
-            created_at          TEXT DEFAULT (datetime('now'))
+            created_at          TEXT DEFAULT CURRENT_TIMESTAMP
         )
     """)
     tables_created += 1
@@ -576,8 +575,8 @@ def init_constructclaw_schema(db_path: str = DB_PATH) -> dict:
                                 CHECK(pco_status IN ('identified','pricing','submitted','approved','rejected','void')),
             notes               TEXT,
             company_id          TEXT NOT NULL REFERENCES company(id) ON DELETE RESTRICT,
-            created_at          TEXT DEFAULT (datetime('now')),
-            updated_at          TEXT DEFAULT (datetime('now'))
+            created_at          TEXT DEFAULT CURRENT_TIMESTAMP,
+            updated_at          TEXT DEFAULT CURRENT_TIMESTAMP
         )
     """)
     tables_created += 1
@@ -607,8 +606,8 @@ def init_constructclaw_schema(db_path: str = DB_PATH) -> dict:
             approved_date       TEXT,
             notes               TEXT,
             company_id          TEXT NOT NULL REFERENCES company(id) ON DELETE RESTRICT,
-            created_at          TEXT DEFAULT (datetime('now')),
-            updated_at          TEXT DEFAULT (datetime('now'))
+            created_at          TEXT DEFAULT CURRENT_TIMESTAMP,
+            updated_at          TEXT DEFAULT CURRENT_TIMESTAMP
         )
     """)
     tables_created += 1
@@ -634,7 +633,7 @@ def init_constructclaw_schema(db_path: str = DB_PATH) -> dict:
             assigned_to         TEXT,
             priority            TEXT NOT NULL DEFAULT 'normal'
                                 CHECK(priority IN ('critical','high','normal','low')),
-            date_sent           TEXT NOT NULL DEFAULT (date('now')),
+            date_sent           TEXT NOT NULL DEFAULT CURRENT_DATE,
             date_required       TEXT,
             date_responded      TEXT,
             cost_impact         TEXT DEFAULT '0',
@@ -643,8 +642,8 @@ def init_constructclaw_schema(db_path: str = DB_PATH) -> dict:
                                 CHECK(rfi_status IN ('open','responded','closed','void')),
             notes               TEXT,
             company_id          TEXT NOT NULL REFERENCES company(id) ON DELETE RESTRICT,
-            created_at          TEXT DEFAULT (datetime('now')),
-            updated_at          TEXT DEFAULT (datetime('now'))
+            created_at          TEXT DEFAULT CURRENT_TIMESTAMP,
+            updated_at          TEXT DEFAULT CURRENT_TIMESTAMP
         )
     """)
     tables_created += 1
@@ -667,7 +666,7 @@ def init_constructclaw_schema(db_path: str = DB_PATH) -> dict:
             description         TEXT,
             submitted_by        TEXT,
             submitted_to        TEXT,
-            date_submitted      TEXT NOT NULL DEFAULT (date('now')),
+            date_submitted      TEXT NOT NULL DEFAULT CURRENT_DATE,
             date_required       TEXT,
             date_returned       TEXT,
             submittal_status    TEXT NOT NULL DEFAULT 'pending'
@@ -675,8 +674,8 @@ def init_constructclaw_schema(db_path: str = DB_PATH) -> dict:
             review_comments     TEXT,
             notes               TEXT,
             company_id          TEXT NOT NULL REFERENCES company(id) ON DELETE RESTRICT,
-            created_at          TEXT DEFAULT (datetime('now')),
-            updated_at          TEXT DEFAULT (datetime('now'))
+            created_at          TEXT DEFAULT CURRENT_TIMESTAMP,
+            updated_at          TEXT DEFAULT CURRENT_TIMESTAMP
         )
     """)
     tables_created += 1
@@ -694,7 +693,7 @@ def init_constructclaw_schema(db_path: str = DB_PATH) -> dict:
             naming_series       TEXT,
             job_id              TEXT NOT NULL REFERENCES constructclaw_job(id) ON DELETE RESTRICT,
             incident_number     TEXT,
-            incident_date       TEXT NOT NULL DEFAULT (date('now')),
+            incident_date       TEXT NOT NULL DEFAULT CURRENT_DATE,
             incident_time       TEXT,
             incident_type       TEXT NOT NULL DEFAULT 'near_miss'
                                 CHECK(incident_type IN ('near_miss','first_aid','recordable','lost_time','fatality','property_damage','environmental','other')),
@@ -712,8 +711,8 @@ def init_constructclaw_schema(db_path: str = DB_PATH) -> dict:
                                 CHECK(incident_status IN ('open','investigating','corrective_action','closed')),
             notes               TEXT,
             company_id          TEXT NOT NULL REFERENCES company(id) ON DELETE RESTRICT,
-            created_at          TEXT DEFAULT (datetime('now')),
-            updated_at          TEXT DEFAULT (datetime('now'))
+            created_at          TEXT DEFAULT CURRENT_TIMESTAMP,
+            updated_at          TEXT DEFAULT CURRENT_TIMESTAMP
         )
     """)
     tables_created += 1
@@ -731,7 +730,7 @@ def init_constructclaw_schema(db_path: str = DB_PATH) -> dict:
         CREATE TABLE IF NOT EXISTS constructclaw_toolbox_talk (
             id                  TEXT PRIMARY KEY,
             job_id              TEXT NOT NULL REFERENCES constructclaw_job(id) ON DELETE RESTRICT,
-            talk_date           TEXT NOT NULL DEFAULT (date('now')),
+            talk_date           TEXT NOT NULL DEFAULT CURRENT_DATE,
             topic               TEXT NOT NULL,
             presenter           TEXT,
             attendee_count      INTEGER NOT NULL DEFAULT 0,
@@ -739,7 +738,7 @@ def init_constructclaw_schema(db_path: str = DB_PATH) -> dict:
             duration_minutes    INTEGER DEFAULT 0,
             notes               TEXT,
             company_id          TEXT NOT NULL REFERENCES company(id) ON DELETE RESTRICT,
-            created_at          TEXT DEFAULT (datetime('now'))
+            created_at          TEXT DEFAULT CURRENT_TIMESTAMP
         )
     """)
     tables_created += 1
@@ -764,8 +763,8 @@ def init_constructclaw_schema(db_path: str = DB_PATH) -> dict:
             cert_status         TEXT NOT NULL DEFAULT 'active'
                                 CHECK(cert_status IN ('active','expiring_soon','expired','revoked')),
             company_id          TEXT NOT NULL REFERENCES company(id) ON DELETE RESTRICT,
-            created_at          TEXT DEFAULT (datetime('now')),
-            updated_at          TEXT DEFAULT (datetime('now'))
+            created_at          TEXT DEFAULT CURRENT_TIMESTAMP,
+            updated_at          TEXT DEFAULT CURRENT_TIMESTAMP
         )
     """)
     tables_created += 1
@@ -782,14 +781,14 @@ def init_constructclaw_schema(db_path: str = DB_PATH) -> dict:
         CREATE TABLE IF NOT EXISTS constructclaw_earned_value (
             id                  TEXT PRIMARY KEY,
             job_id              TEXT NOT NULL REFERENCES constructclaw_job(id) ON DELETE RESTRICT,
-            period_date         TEXT NOT NULL DEFAULT (date('now')),
+            period_date         TEXT NOT NULL DEFAULT CURRENT_DATE,
             planned_value       TEXT NOT NULL DEFAULT '0',
             earned_value        TEXT NOT NULL DEFAULT '0',
             actual_cost         TEXT NOT NULL DEFAULT '0',
             budget_at_completion TEXT NOT NULL DEFAULT '0',
             notes               TEXT,
             company_id          TEXT NOT NULL REFERENCES company(id) ON DELETE RESTRICT,
-            created_at          TEXT DEFAULT (datetime('now'))
+            created_at          TEXT DEFAULT CURRENT_TIMESTAMP
         )
     """)
     tables_created += 1

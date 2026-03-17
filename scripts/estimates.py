@@ -12,7 +12,7 @@ sys.path.insert(0, os.path.expanduser("~/.openclaw/erpclaw/lib"))
 from erpclaw_lib.naming import get_next_name, register_prefix
 from erpclaw_lib.response import ok, err, row_to_dict
 from erpclaw_lib.audit import audit
-from erpclaw_lib.query import Q, P, Table, Field, fn, Order, insert_row, LiteralValue, dynamic_update
+from erpclaw_lib.query import Q, P, Table, Field, fn, Order, insert_row, LiteralValue, dynamic_update, now
 
 SKILL = "constructclaw"
 
@@ -108,7 +108,7 @@ def update_estimate(conn, args):
     if not changed:
         err("No fields to update")
 
-    data["updated_at"] = LiteralValue("datetime('now')")
+    data["updated_at"] = now()
     sql, params = dynamic_update("constructclaw_estimate", data, {"id": est_id})
     conn.execute(sql, params)
     audit(conn, SKILL, "construction-update-estimate", "constructclaw_estimate", est_id,
@@ -221,12 +221,12 @@ def add_estimate_line(conn, args):
     # Recalculate estimate total
     # PyPika: skipped — CAST inside COALESCE/SUM aggregate
     total_row = conn.execute(
-        "SELECT COALESCE(SUM(CAST(amount AS REAL)), 0) as total FROM constructclaw_estimate_line WHERE estimate_id = ?",
+        "SELECT COALESCE(SUM(CAST(amount AS NUMERIC)), 0) as total FROM constructclaw_estimate_line WHERE estimate_id = ?",
         (est_id,),
     ).fetchone()
     new_total = str(_d(total_row["total"]).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
     sql_upd, params_upd = dynamic_update("constructclaw_estimate",
-        {"total_amount": new_total, "updated_at": LiteralValue("datetime('now')")},
+        {"total_amount": new_total, "updated_at": now()},
         {"id": est_id})
     conn.execute(sql_upd, params_upd)
 
@@ -274,12 +274,12 @@ def update_estimate_line(conn, args):
     est_id = row["estimate_id"]
     # PyPika: skipped — CAST inside COALESCE/SUM aggregate
     total_row = conn.execute(
-        "SELECT COALESCE(SUM(CAST(amount AS REAL)), 0) as total FROM constructclaw_estimate_line WHERE estimate_id = ?",
+        "SELECT COALESCE(SUM(CAST(amount AS NUMERIC)), 0) as total FROM constructclaw_estimate_line WHERE estimate_id = ?",
         (est_id,),
     ).fetchone()
     new_total = str(_d(total_row["total"]).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
     sql_upd, params_upd = dynamic_update("constructclaw_estimate",
-        {"total_amount": new_total, "updated_at": LiteralValue("datetime('now')")},
+        {"total_amount": new_total, "updated_at": now()},
         {"id": est_id})
     conn.execute(sql_upd, params_upd)
 
@@ -314,7 +314,7 @@ def submit_estimate(conn, args):
         err(f"Estimate must be in draft status to submit (current: {row['estimate_status']})")
 
     sql, params = dynamic_update("constructclaw_estimate",
-        {"estimate_status": "submitted", "updated_at": LiteralValue("datetime('now')")},
+        {"estimate_status": "submitted", "updated_at": now()},
         {"id": est_id})
     conn.execute(sql, params)
     audit(conn, SKILL, "construction-submit-estimate", "constructclaw_estimate", est_id,
@@ -402,7 +402,7 @@ def award_bid(conn, args):
         err(f"Bid must be submitted or under_review to award (current: {row['bid_status']})")
 
     sql, params = dynamic_update("constructclaw_bid",
-        {"bid_status": "awarded", "updated_at": LiteralValue("datetime('now')")},
+        {"bid_status": "awarded", "updated_at": now()},
         {"id": bid_id})
     conn.execute(sql, params)
     audit(conn, SKILL, "construction-award-bid", "constructclaw_bid", bid_id,
@@ -431,8 +431,8 @@ def compare_bids(conn, args):
         q = q.where(t.job_id == P())
         params.append(job_id)
 
-    # PyPika: skipped — ORDER BY CAST(bid_amount AS REAL) not cleanly expressible
-    q = q.orderby(LiteralValue("CAST(bid_amount AS REAL)"), order=Order.asc)
+    # PyPika: skipped — ORDER BY CAST(bid_amount AS NUMERIC) not cleanly expressible
+    q = q.orderby(LiteralValue("CAST(bid_amount AS NUMERIC)"), order=Order.asc)
     bids = conn.execute(q.get_sql(), params).fetchall()
 
     if not bids:

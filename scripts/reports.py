@@ -38,7 +38,7 @@ def job_cost_report(conn, args):
     # Cost by category
     cat_rows = conn.execute(
         """SELECT category, COUNT(*) as entry_count,
-                  COALESCE(SUM(CAST(amount AS REAL)), 0) as total_amount,
+                  COALESCE(SUM(CAST(amount AS NUMERIC)), 0) as total_amount,
                   COALESCE(SUM(CAST(hours AS REAL)), 0) as total_hours
            FROM constructclaw_cost_entry WHERE job_id = ?
            GROUP BY category ORDER BY total_amount DESC""",
@@ -59,14 +59,14 @@ def job_cost_report(conn, args):
 
     # Commitments
     commitment_row = conn.execute(
-        "SELECT COALESCE(SUM(CAST(revised_amount AS REAL)), 0) as total FROM constructclaw_commitment WHERE job_id = ? AND commitment_status NOT IN ('cancelled','closed')",
+        "SELECT COALESCE(SUM(CAST(revised_amount AS NUMERIC)), 0) as total FROM constructclaw_commitment WHERE job_id = ? AND commitment_status NOT IN ('cancelled','closed')",
         (job_id,),
     ).fetchone()
     total_committed = _d(commitment_row["total"])
 
     # Change orders
     co_row = conn.execute(
-        "SELECT COALESCE(SUM(CAST(cost_change AS REAL)), 0) as total FROM constructclaw_cco WHERE job_id = ? AND cco_status IN ('approved','executed')",
+        "SELECT COALESCE(SUM(CAST(cost_change AS NUMERIC)), 0) as total FROM constructclaw_cco WHERE job_id = ? AND cco_status IN ('approved','executed')",
         (job_id,),
     ).fetchone()
     total_cos = _d(co_row["total"])
@@ -111,14 +111,14 @@ def wip_report_all(conn, args):
         total_contract_all += contract
 
         cost_row = conn.execute(
-            "SELECT COALESCE(SUM(CAST(amount AS REAL)), 0) as total FROM constructclaw_cost_entry WHERE job_id = ?",
+            "SELECT COALESCE(SUM(CAST(amount AS NUMERIC)), 0) as total FROM constructclaw_cost_entry WHERE job_id = ?",
             (j["id"],),
         ).fetchone()
         total_cost = _d(cost_row["total"])
         total_cost_all += total_cost
 
         billed_row = conn.execute(
-            "SELECT COALESCE(SUM(CAST(current_due AS REAL)), 0) as total FROM constructclaw_progress_bill WHERE job_id = ? AND bill_status != 'rejected'",
+            "SELECT COALESCE(SUM(CAST(current_due AS NUMERIC)), 0) as total FROM constructclaw_progress_bill WHERE job_id = ? AND bill_status != 'rejected'",
             (j["id"],),
         ).fetchone()
         total_billed = _d(billed_row["total"])
@@ -164,7 +164,7 @@ def subcontractor_aging(conn, args):
     for s in subs:
         revised = _d(s["revised_amount"])
         paid_row = conn.execute(
-            "SELECT COALESCE(SUM(CAST(current_payment_due AS REAL)), 0) as total FROM constructclaw_pay_application WHERE subcontract_id = ? AND pay_app_status IN ('approved','paid')",
+            "SELECT COALESCE(SUM(CAST(current_payment_due AS NUMERIC)), 0) as total FROM constructclaw_pay_application WHERE subcontract_id = ? AND pay_app_status IN ('approved','paid')",
             (s["id"],),
         ).fetchone()
         paid = _d(paid_row["total"])
@@ -237,19 +237,19 @@ def executive_summary(conn, args):
     jobs_by_status = {r["job_status"]: r["cnt"] for r in job_stats}
 
     total_contract_row = conn.execute(
-        "SELECT COALESCE(SUM(CAST(contract_amount AS REAL)), 0) as total FROM constructclaw_job WHERE company_id = ? AND job_status NOT IN ('cancelled')",
+        "SELECT COALESCE(SUM(CAST(contract_amount AS NUMERIC)), 0) as total FROM constructclaw_job WHERE company_id = ? AND job_status NOT IN ('cancelled')",
         (company_id,),
     ).fetchone()
     total_contract = _d(total_contract_row["total"])
 
     total_cost_row = conn.execute(
-        "SELECT COALESCE(SUM(CAST(amount AS REAL)), 0) as total FROM constructclaw_cost_entry WHERE company_id = ?",
+        "SELECT COALESCE(SUM(CAST(amount AS NUMERIC)), 0) as total FROM constructclaw_cost_entry WHERE company_id = ?",
         (company_id,),
     ).fetchone()
     total_cost = _d(total_cost_row["total"])
 
     total_billed_row = conn.execute(
-        "SELECT COALESCE(SUM(CAST(current_due AS REAL)), 0) as total FROM constructclaw_progress_bill WHERE company_id = ? AND bill_status != 'rejected'",
+        "SELECT COALESCE(SUM(CAST(current_due AS NUMERIC)), 0) as total FROM constructclaw_progress_bill WHERE company_id = ? AND bill_status != 'rejected'",
         (company_id,),
     ).fetchone()
     total_billed = _d(total_billed_row["total"])
@@ -305,13 +305,13 @@ def portfolio_overview(conn, args):
         contract = _d(j["contract_amount"])
 
         cost_row = conn.execute(
-            "SELECT COALESCE(SUM(CAST(amount AS REAL)), 0) as total FROM constructclaw_cost_entry WHERE job_id = ?",
+            "SELECT COALESCE(SUM(CAST(amount AS NUMERIC)), 0) as total FROM constructclaw_cost_entry WHERE job_id = ?",
             (j["id"],),
         ).fetchone()
         total_cost = _d(cost_row["total"])
 
         co_row = conn.execute(
-            "SELECT COALESCE(SUM(CAST(cost_change AS REAL)), 0) as total FROM constructclaw_cco WHERE job_id = ? AND cco_status IN ('approved','executed')",
+            "SELECT COALESCE(SUM(CAST(cost_change AS NUMERIC)), 0) as total FROM constructclaw_cco WHERE job_id = ? AND cco_status IN ('approved','executed')",
             (j["id"],),
         ).fetchone()
         total_cos = _d(co_row["total"])

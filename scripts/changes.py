@@ -12,7 +12,7 @@ sys.path.insert(0, os.path.expanduser("~/.openclaw/erpclaw/lib"))
 from erpclaw_lib.naming import get_next_name, register_prefix
 from erpclaw_lib.response import ok, err, row_to_dict
 from erpclaw_lib.audit import audit
-from erpclaw_lib.query import Q, P, Table, Field, fn, Order, insert_row, LiteralValue, dynamic_update
+from erpclaw_lib.query import Q, P, Table, Field, fn, Order, insert_row, dynamic_update, now, today
 
 SKILL = "constructclaw"
 
@@ -111,7 +111,7 @@ def update_pco(conn, args):
     if not changed:
         err("No fields to update")
 
-    data["updated_at"] = LiteralValue("datetime('now')")
+    data["updated_at"] = now()
     sql, params = dynamic_update("constructclaw_pco", data, {"id": pco_id})
     conn.execute(sql, params)
     audit(conn, SKILL, "construction-update-pco", "constructclaw_pco", pco_id,
@@ -190,7 +190,7 @@ def approve_pco(conn, args):
 
     # Update PCO status
     sql, params = dynamic_update("constructclaw_pco",
-        {"pco_status": "approved", "updated_at": LiteralValue("datetime('now')")},
+        {"pco_status": "approved", "updated_at": now()},
         {"id": pco_id})
     conn.execute(sql, params)
 
@@ -206,7 +206,7 @@ def approve_pco(conn, args):
     # Sum existing approved CCOs
     # PyPika: skipped — CAST inside COALESCE/SUM aggregate with IN clause
     existing_cos = conn.execute(
-        "SELECT COALESCE(SUM(CAST(cost_change AS REAL)), 0) as total FROM constructclaw_cco WHERE job_id = ? AND cco_status IN ('approved','executed')",
+        "SELECT COALESCE(SUM(CAST(cost_change AS NUMERIC)), 0) as total FROM constructclaw_cco WHERE job_id = ? AND cco_status IN ('approved','executed')",
         (pco["job_id"],),
     ).fetchone()
     existing_total = _d(existing_cos["total"])
@@ -338,8 +338,8 @@ def approve_cco(conn, args):
     sql, params = dynamic_update("constructclaw_cco", {
         "cco_status": "approved",
         "approved_by": approved_by,
-        "approved_date": LiteralValue("date('now')"),
-        "updated_at": LiteralValue("datetime('now')"),
+        "approved_date": today(),
+        "updated_at": now(),
     }, {"id": cco_id})
     conn.execute(sql, params)
     audit(conn, SKILL, "construction-approve-cco", "constructclaw_cco", cco_id,
@@ -408,7 +408,7 @@ def change_order_impact(conn, args):
 
     # Only approved/executed CCOs affect contract
     approved_cos = conn.execute(
-        "SELECT COALESCE(SUM(CAST(cost_change AS REAL)), 0) as total FROM constructclaw_cco WHERE job_id = ? AND cco_status IN ('approved','executed')",
+        "SELECT COALESCE(SUM(CAST(cost_change AS NUMERIC)), 0) as total FROM constructclaw_cco WHERE job_id = ? AND cco_status IN ('approved','executed')",
         (job_id,),
     ).fetchone()
     approved_impact = _d(approved_cos["total"])

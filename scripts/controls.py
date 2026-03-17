@@ -12,7 +12,7 @@ from decimal import Decimal, ROUND_HALF_UP
 sys.path.insert(0, os.path.expanduser("~/.openclaw/erpclaw/lib"))
 from erpclaw_lib.response import ok, err, row_to_dict
 from erpclaw_lib.audit import audit
-from erpclaw_lib.query import Q, P, Table, Field, fn, Order, insert_row, LiteralValue, dynamic_update
+from erpclaw_lib.query import Q, P, Table, Field, fn, Order, insert_row, dynamic_update
 
 SKILL = "constructclaw"
 
@@ -208,14 +208,14 @@ def cost_forecast(conn, args):
 
     # Total actual cost
     cost_row = conn.execute(
-        "SELECT COALESCE(SUM(CAST(amount AS REAL)), 0) as total FROM constructclaw_cost_entry WHERE job_id = ?",
+        "SELECT COALESCE(SUM(CAST(amount AS NUMERIC)), 0) as total FROM constructclaw_cost_entry WHERE job_id = ?",
         (job_id,),
     ).fetchone()
     actual_cost = _d(cost_row["total"])
 
     # Total committed
     committed_row = conn.execute(
-        "SELECT COALESCE(SUM(CAST(revised_amount AS REAL)), 0) as total FROM constructclaw_commitment WHERE job_id = ? AND commitment_status NOT IN ('cancelled','closed')",
+        "SELECT COALESCE(SUM(CAST(revised_amount AS NUMERIC)), 0) as total FROM constructclaw_commitment WHERE job_id = ? AND commitment_status NOT IN ('cancelled','closed')",
         (job_id,),
     ).fetchone()
     total_committed = _d(committed_row["total"])
@@ -269,13 +269,13 @@ def project_health_dashboard(conn, args):
     ).fetchone()["cnt"]
 
     total_contract_row = conn.execute(
-        "SELECT COALESCE(SUM(CAST(contract_amount AS REAL)), 0) as total FROM constructclaw_job WHERE company_id = ? AND job_status NOT IN ('cancelled')",
+        "SELECT COALESCE(SUM(CAST(contract_amount AS NUMERIC)), 0) as total FROM constructclaw_job WHERE company_id = ? AND job_status NOT IN ('cancelled')",
         (company_id,),
     ).fetchone()
     total_contract = _d(total_contract_row["total"])
 
     total_cost_row = conn.execute(
-        "SELECT COALESCE(SUM(CAST(amount AS REAL)), 0) as total FROM constructclaw_cost_entry WHERE company_id = ?",
+        "SELECT COALESCE(SUM(CAST(amount AS NUMERIC)), 0) as total FROM constructclaw_cost_entry WHERE company_id = ?",
         (company_id,),
     ).fetchone()
     total_cost = _d(total_cost_row["total"])

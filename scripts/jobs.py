@@ -12,7 +12,7 @@ sys.path.insert(0, os.path.expanduser("~/.openclaw/erpclaw/lib"))
 from erpclaw_lib.naming import get_next_name, register_prefix
 from erpclaw_lib.response import ok, err, row_to_dict
 from erpclaw_lib.audit import audit
-from erpclaw_lib.query import Q, P, Table, Field, fn, Order, insert_row, LiteralValue, dynamic_update
+from erpclaw_lib.query import Q, P, Table, Field, fn, Order, insert_row, dynamic_update, now
 
 SKILL = "constructclaw"
 
@@ -159,7 +159,7 @@ def update_job(conn, args):
     if not changed:
         err("No fields to update")
 
-    data["updated_at"] = LiteralValue("datetime('now')")
+    data["updated_at"] = now()
     sql, params = dynamic_update("constructclaw_job", data, {"id": job_id})
     conn.execute(sql, params)
     audit(conn, SKILL, "construction-update-job", "constructclaw_job", job_id,
@@ -527,7 +527,7 @@ def update_commitment(conn, args):
     if not changed:
         err("No fields to update")
 
-    data["updated_at"] = LiteralValue("datetime('now')")
+    data["updated_at"] = now()
     sql, params = dynamic_update("constructclaw_commitment", data, {"id": cm_id})
     conn.execute(sql, params)
     audit(conn, SKILL, "construction-update-commitment", "constructclaw_commitment", cm_id,
@@ -594,9 +594,9 @@ def job_cost_summary(conn, args):
         budget = _d(cc["budget_amount"])
         total_budget += budget
 
-        # PyPika: skipped — CAST(amount AS REAL) inside COALESCE/SUM
+        # PyPika: skipped — CAST(amount AS NUMERIC) inside COALESCE/SUM
         actual_row = conn.execute(
-            "SELECT COALESCE(SUM(CAST(amount AS REAL)), 0) as total FROM constructclaw_cost_entry WHERE cost_code_id = ?",
+            "SELECT COALESCE(SUM(CAST(amount AS NUMERIC)), 0) as total FROM constructclaw_cost_entry WHERE cost_code_id = ?",
             (cc["id"],),
         ).fetchone()
         actual = _d(actual_row["total"])
@@ -604,7 +604,7 @@ def job_cost_summary(conn, args):
 
         # PyPika: skipped — CAST + NOT IN inside aggregate
         committed_row = conn.execute(
-            "SELECT COALESCE(SUM(CAST(revised_amount AS REAL)), 0) as total FROM constructclaw_commitment WHERE cost_code_id = ? AND commitment_status NOT IN ('cancelled','closed')",
+            "SELECT COALESCE(SUM(CAST(revised_amount AS NUMERIC)), 0) as total FROM constructclaw_commitment WHERE cost_code_id = ? AND commitment_status NOT IN ('cancelled','closed')",
             (cc["id"],),
         ).fetchone()
         committed = _d(committed_row["total"])
@@ -649,21 +649,21 @@ def job_profitability(conn, args):
     # PyPika: skipped — CAST inside COALESCE/SUM aggregate
     # Total billed
     billed_row = conn.execute(
-        "SELECT COALESCE(SUM(CAST(current_due AS REAL)), 0) as total FROM constructclaw_progress_bill WHERE job_id = ? AND bill_status != 'rejected'",
+        "SELECT COALESCE(SUM(CAST(current_due AS NUMERIC)), 0) as total FROM constructclaw_progress_bill WHERE job_id = ? AND bill_status != 'rejected'",
         (job_id,),
     ).fetchone()
     total_billed = _d(billed_row["total"])
 
     # Total cost
     cost_row = conn.execute(
-        "SELECT COALESCE(SUM(CAST(amount AS REAL)), 0) as total FROM constructclaw_cost_entry WHERE job_id = ?",
+        "SELECT COALESCE(SUM(CAST(amount AS NUMERIC)), 0) as total FROM constructclaw_cost_entry WHERE job_id = ?",
         (job_id,),
     ).fetchone()
     total_cost = _d(cost_row["total"])
 
     # Change orders
     co_row = conn.execute(
-        "SELECT COALESCE(SUM(CAST(cost_change AS REAL)), 0) as total FROM constructclaw_cco WHERE job_id = ? AND cco_status IN ('approved','executed')",
+        "SELECT COALESCE(SUM(CAST(cost_change AS NUMERIC)), 0) as total FROM constructclaw_cco WHERE job_id = ? AND cco_status IN ('approved','executed')",
         (job_id,),
     ).fetchone()
     total_cos = _d(co_row["total"])
@@ -705,14 +705,14 @@ def wip_report(conn, args):
     # PyPika: skipped — CAST inside COALESCE/SUM aggregate
     # Total cost
     cost_row = conn.execute(
-        "SELECT COALESCE(SUM(CAST(amount AS REAL)), 0) as total FROM constructclaw_cost_entry WHERE job_id = ?",
+        "SELECT COALESCE(SUM(CAST(amount AS NUMERIC)), 0) as total FROM constructclaw_cost_entry WHERE job_id = ?",
         (job_id,),
     ).fetchone()
     total_cost = _d(cost_row["total"])
 
     # Total billed
     billed_row = conn.execute(
-        "SELECT COALESCE(SUM(CAST(current_due AS REAL)), 0) as total FROM constructclaw_progress_bill WHERE job_id = ? AND bill_status != 'rejected'",
+        "SELECT COALESCE(SUM(CAST(current_due AS NUMERIC)), 0) as total FROM constructclaw_progress_bill WHERE job_id = ? AND bill_status != 'rejected'",
         (job_id,),
     ).fetchone()
     total_billed = _d(billed_row["total"])
@@ -750,7 +750,7 @@ def job_status_report(conn, args):
     for j in jobs:
         # PyPika: skipped — CAST inside COALESCE/SUM aggregate
         cost_row = conn.execute(
-            "SELECT COALESCE(SUM(CAST(amount AS REAL)), 0) as total FROM constructclaw_cost_entry WHERE job_id = ?",
+            "SELECT COALESCE(SUM(CAST(amount AS NUMERIC)), 0) as total FROM constructclaw_cost_entry WHERE job_id = ?",
             (j["id"],),
         ).fetchone()
         report.append({

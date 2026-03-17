@@ -12,7 +12,7 @@ sys.path.insert(0, os.path.expanduser("~/.openclaw/erpclaw/lib"))
 from erpclaw_lib.naming import get_next_name, register_prefix
 from erpclaw_lib.response import ok, err, row_to_dict
 from erpclaw_lib.audit import audit
-from erpclaw_lib.query import Q, P, Table, Field, fn, Order, insert_row, LiteralValue, dynamic_update
+from erpclaw_lib.query import Q, P, Table, Field, fn, Order, insert_row, dynamic_update, now
 
 SKILL = "constructclaw"
 
@@ -124,7 +124,7 @@ def update_subcontract(conn, args):
     if not changed:
         err("No fields to update")
 
-    data["updated_at"] = LiteralValue("datetime('now')")
+    data["updated_at"] = now()
     sql, params = dynamic_update("constructclaw_subcontract", data, {"id": sub_id})
     conn.execute(sql, params)
     audit(conn, SKILL, "construction-update-subcontract", "constructclaw_subcontract", sub_id,
@@ -262,7 +262,7 @@ def approve_subcontract(conn, args):
         err(f"Subcontract must be draft or pending_approval to approve (current: {row['subcontract_status']})")
 
     sql, params = dynamic_update("constructclaw_subcontract",
-        {"subcontract_status": "approved", "updated_at": LiteralValue("datetime('now')")},
+        {"subcontract_status": "approved", "updated_at": now()},
         {"id": sub_id})
     conn.execute(sql, params)
     audit(conn, SKILL, "construction-approve-subcontract", "constructclaw_subcontract", sub_id,
@@ -303,7 +303,7 @@ def add_pay_application(conn, args):
     # Get previous payments
     # PyPika: skipped — CAST inside COALESCE/SUM aggregate with IN clause
     prev_row = conn.execute(
-        "SELECT COALESCE(SUM(CAST(current_payment_due AS REAL)), 0) as total FROM constructclaw_pay_application WHERE subcontract_id = ? AND pay_app_status IN ('approved', 'paid')",
+        "SELECT COALESCE(SUM(CAST(current_payment_due AS NUMERIC)), 0) as total FROM constructclaw_pay_application WHERE subcontract_id = ? AND pay_app_status IN ('approved', 'paid')",
         (sub_id,),
     ).fetchone()
     previous_payments = _d(prev_row["total"])
@@ -393,7 +393,7 @@ def approve_pay_application(conn, args):
         err(f"Pay application must be draft or submitted to approve (current: {row['pay_app_status']})")
 
     sql, params = dynamic_update("constructclaw_pay_application",
-        {"pay_app_status": "approved", "updated_at": LiteralValue("datetime('now')")},
+        {"pay_app_status": "approved", "updated_at": now()},
         {"id": pa_id})
     conn.execute(sql, params)
     audit(conn, SKILL, "construction-approve-pay-application", "constructclaw_pay_application", pa_id,
@@ -416,7 +416,7 @@ def reject_pay_application(conn, args):
         err(f"Pay application must be draft or submitted to reject (current: {row['pay_app_status']})")
 
     sql, params = dynamic_update("constructclaw_pay_application",
-        {"pay_app_status": "rejected", "updated_at": LiteralValue("datetime('now')")},
+        {"pay_app_status": "rejected", "updated_at": now()},
         {"id": pa_id})
     conn.execute(sql, params)
     audit(conn, SKILL, "construction-reject-pay-application", "constructclaw_pay_application", pa_id,
@@ -510,14 +510,14 @@ def subcontractor_aging_report(conn, args):
         total_committed += revised
 
         paid_row = conn.execute(
-            "SELECT COALESCE(SUM(CAST(current_payment_due AS REAL)), 0) as total FROM constructclaw_pay_application WHERE subcontract_id = ? AND pay_app_status IN ('approved','paid')",
+            "SELECT COALESCE(SUM(CAST(current_payment_due AS NUMERIC)), 0) as total FROM constructclaw_pay_application WHERE subcontract_id = ? AND pay_app_status IN ('approved','paid')",
             (s["id"],),
         ).fetchone()
         paid = _d(paid_row["total"])
         total_paid += paid
 
         ret_held_row = conn.execute(
-            "SELECT COALESCE(SUM(CAST(retention_held AS REAL)), 0) as total FROM constructclaw_pay_application WHERE subcontract_id = ? AND pay_app_status IN ('approved','paid')",
+            "SELECT COALESCE(SUM(CAST(retention_held AS NUMERIC)), 0) as total FROM constructclaw_pay_application WHERE subcontract_id = ? AND pay_app_status IN ('approved','paid')",
             (s["id"],),
         ).fetchone()
         ret_held = _d(ret_held_row["total"])

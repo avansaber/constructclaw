@@ -13,7 +13,7 @@ from erpclaw_lib.naming import get_next_name, register_prefix
 from erpclaw_lib.response import ok, err, row_to_dict
 from erpclaw_lib.audit import audit
 from erpclaw_lib.cross_skill import create_invoice, submit_invoice, CrossSkillError
-from erpclaw_lib.query import Q, P, Table, Field, fn, Order, insert_row, LiteralValue, dynamic_update
+from erpclaw_lib.query import Q, P, Table, Field, fn, Order, insert_row, dynamic_update, now, today
 
 SKILL = "constructclaw"
 
@@ -195,7 +195,7 @@ def add_progress_bill(conn, args):
     # Get previous bills total
     # PyPika: skipped — CAST inside COALESCE/SUM aggregate
     prev_row = conn.execute(
-        "SELECT COALESCE(SUM(CAST(current_due AS REAL)), 0) as total FROM constructclaw_progress_bill WHERE job_id = ? AND bill_status != 'rejected'",
+        "SELECT COALESCE(SUM(CAST(current_due AS NUMERIC)), 0) as total FROM constructclaw_progress_bill WHERE job_id = ? AND bill_status != 'rejected'",
         (job_id,),
     ).fetchone()
     total_previous = str(_d(prev_row["total"]).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
@@ -291,7 +291,7 @@ def submit_progress_bill(conn, args):
         err(f"Progress bill must be in draft status to submit (current: {row['bill_status']})")
 
     sql, params = dynamic_update("constructclaw_progress_bill",
-        {"bill_status": "submitted", "updated_at": LiteralValue("datetime('now')")},
+        {"bill_status": "submitted", "updated_at": now()},
         {"id": pb_id})
     conn.execute(sql, params)
     audit(conn, SKILL, "construction-submit-progress-bill", "constructclaw_progress_bill", pb_id,
@@ -403,7 +403,7 @@ def approve_progress_bill(conn, args):
     # Update the progress bill status and link the invoice
     sql, params = dynamic_update("constructclaw_progress_bill",
         {"bill_status": "approved", "sales_invoice_id": sales_invoice_id,
-         "updated_at": LiteralValue("datetime('now')")},
+         "updated_at": now()},
         {"id": pb_id})
     conn.execute(sql, params)
 
@@ -523,8 +523,8 @@ def release_retention(conn, args):
         "amount_released": str(new_released.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)),
         "balance": str(new_balance.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)),
         "retention_status": new_status,
-        "release_date": LiteralValue("date('now')"),
-        "updated_at": LiteralValue("datetime('now')"),
+        "release_date": today(),
+        "updated_at": now(),
     }, {"id": ret_id})
     conn.execute(sql, params)
     audit(conn, SKILL, "construction-release-retention", "constructclaw_retention", ret_id,
