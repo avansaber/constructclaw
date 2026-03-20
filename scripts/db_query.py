@@ -2,8 +2,9 @@
 """ConstructClaw -- db_query.py (unified router)
 
 Construction project management: job costing, estimating, subcontractors,
-AIA billing, daily reports, change orders, RFIs, safety, project controls.
-Routes all 112 actions across 10 domain modules.
+AIA billing, daily reports, change orders, RFIs, safety, project controls,
+equipment scheduling, certified payroll, labor time tracking.
+Routes all 130 actions across 11 domain modules.
 
 Usage: python3 db_query.py --action <action-name> [--flags ...]
 Output: JSON to stdout, exit 0 on success, exit 1 on error.
@@ -43,6 +44,7 @@ from rfis import ACTIONS as RFI_ACTIONS
 from safety import ACTIONS as SAFETY_ACTIONS
 from controls import ACTIONS as CONTROL_ACTIONS
 from reports import ACTIONS as REPORT_ACTIONS
+from field_ops import ACTIONS as FIELD_OPS_ACTIONS
 
 # ---------------------------------------------------------------------------
 # Merge all domain actions into one router
@@ -61,6 +63,7 @@ ACTIONS.update(RFI_ACTIONS)
 ACTIONS.update(SAFETY_ACTIONS)
 ACTIONS.update(CONTROL_ACTIONS)
 ACTIONS.update(REPORT_ACTIONS)
+ACTIONS.update(FIELD_OPS_ACTIONS)
 
 
 def main():
@@ -267,6 +270,53 @@ def main():
     parser.add_argument("--earned-value")
     parser.add_argument("--actual-cost")
     parser.add_argument("--budget-at-completion")
+
+    # -- Equipment Scheduling --
+    parser.add_argument("--assignment-id")
+    parser.add_argument("--equipment-name")
+    parser.add_argument("--equipment-type")
+    parser.add_argument("--daily-rate")
+    parser.add_argument("--mobilization-cost")
+    parser.add_argument("--demobilization-cost")
+    parser.add_argument("--actual-hours")
+    parser.add_argument("--equipment-status")
+
+    # -- Certified Payroll / Prevailing Wage --
+    parser.add_argument("--classification")
+    parser.add_argument("--basic-rate")
+    parser.add_argument("--fringe-rate")
+    parser.add_argument("--total-rate")
+    parser.add_argument("--overtime-rate")
+    parser.add_argument("--wage-determination-number")
+    parser.add_argument("--effective-date")
+    parser.add_argument("--wage-status")
+    parser.add_argument("--week-ending")
+    parser.add_argument("--employee-name")
+    parser.add_argument("--employee-id")
+    parser.add_argument("--mon-hours")
+    parser.add_argument("--tue-hours")
+    parser.add_argument("--wed-hours")
+    parser.add_argument("--thu-hours")
+    parser.add_argument("--fri-hours")
+    parser.add_argument("--sat-hours")
+    parser.add_argument("--sun-hours")
+    parser.add_argument("--overtime-hours")
+    parser.add_argument("--hourly-rate")
+    parser.add_argument("--gross-pay")
+    parser.add_argument("--fica")
+    parser.add_argument("--federal-tax")
+    parser.add_argument("--state-tax")
+    parser.add_argument("--other-deductions")
+    parser.add_argument("--net-pay")
+    parser.add_argument("--fringe-paid")
+    parser.add_argument("--fringe-method")
+
+    # -- Labor Time Tracking --
+    parser.add_argument("--time-entry-id")
+    parser.add_argument("--regular-hours")
+    parser.add_argument("--double-time-hours")
+    parser.add_argument("--work-date")
+    parser.add_argument("--time-status")
 
     # -- Shared --
     parser.add_argument("--notes")

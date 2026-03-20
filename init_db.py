@@ -1,6 +1,6 @@
 """ConstructClaw -- schema initialization.
 
-Creates 27 tables for construction project management
+Creates 31 tables for construction project management
 in the shared ERPClaw database.
 Requires company table to exist (erpclaw-setup).
 """
@@ -796,6 +796,140 @@ def init_constructclaw_schema(db_path: str = DB_PATH) -> dict:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_ccev_company ON constructclaw_earned_value(company_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_ccev_date ON constructclaw_earned_value(period_date)")
     indexes_created += 3
+
+    # -------------------------------------------------------------------
+    # 28. constructclaw_equipment_assignment -- equipment scheduling per job
+    # -------------------------------------------------------------------
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS constructclaw_equipment_assignment (
+            id                  TEXT PRIMARY KEY,
+            job_id              TEXT NOT NULL REFERENCES constructclaw_job(id) ON DELETE RESTRICT,
+            equipment_name      TEXT NOT NULL,
+            equipment_type      TEXT,
+            start_date          TEXT NOT NULL,
+            end_date            TEXT,
+            daily_rate          TEXT DEFAULT '0',
+            mobilization_cost   TEXT DEFAULT '0',
+            demobilization_cost TEXT DEFAULT '0',
+            actual_hours        TEXT DEFAULT '0',
+            notes               TEXT,
+            status              TEXT NOT NULL DEFAULT 'scheduled'
+                                CHECK(status IN ('scheduled','active','completed','cancelled')),
+            company_id          TEXT NOT NULL REFERENCES company(id) ON DELETE RESTRICT,
+            created_at          TEXT DEFAULT CURRENT_TIMESTAMP,
+            updated_at          TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    tables_created += 1
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_ccea_job ON constructclaw_equipment_assignment(job_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_ccea_company ON constructclaw_equipment_assignment(company_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_ccea_status ON constructclaw_equipment_assignment(status)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_ccea_dates ON constructclaw_equipment_assignment(start_date, end_date)")
+    indexes_created += 4
+
+    # -------------------------------------------------------------------
+    # 29. constructclaw_prevailing_wage_rate -- Davis-Bacon prevailing wage rates
+    # -------------------------------------------------------------------
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS constructclaw_prevailing_wage_rate (
+            id                          TEXT PRIMARY KEY,
+            job_id                      TEXT NOT NULL REFERENCES constructclaw_job(id) ON DELETE RESTRICT,
+            trade                       TEXT NOT NULL,
+            classification              TEXT NOT NULL,
+            basic_rate                  TEXT NOT NULL,
+            fringe_rate                 TEXT NOT NULL DEFAULT '0',
+            total_rate                  TEXT NOT NULL,
+            overtime_rate               TEXT,
+            wage_determination_number   TEXT,
+            effective_date              TEXT,
+            status                      TEXT DEFAULT 'active'
+                                        CHECK(status IN ('active','expired')),
+            company_id                  TEXT NOT NULL REFERENCES company(id) ON DELETE RESTRICT,
+            created_at                  TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    tables_created += 1
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_ccpwr_job ON constructclaw_prevailing_wage_rate(job_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_ccpwr_company ON constructclaw_prevailing_wage_rate(company_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_ccpwr_trade ON constructclaw_prevailing_wage_rate(trade, classification)")
+    indexes_created += 3
+
+    # -------------------------------------------------------------------
+    # 30. constructclaw_certified_payroll_entry -- WH-347 payroll entries
+    # -------------------------------------------------------------------
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS constructclaw_certified_payroll_entry (
+            id                  TEXT PRIMARY KEY,
+            job_id              TEXT NOT NULL REFERENCES constructclaw_job(id) ON DELETE RESTRICT,
+            week_ending         TEXT NOT NULL,
+            employee_name       TEXT NOT NULL,
+            employee_id         TEXT,
+            trade               TEXT NOT NULL,
+            classification      TEXT NOT NULL,
+            mon_hours           TEXT DEFAULT '0',
+            tue_hours           TEXT DEFAULT '0',
+            wed_hours           TEXT DEFAULT '0',
+            thu_hours           TEXT DEFAULT '0',
+            fri_hours           TEXT DEFAULT '0',
+            sat_hours           TEXT DEFAULT '0',
+            sun_hours           TEXT DEFAULT '0',
+            total_hours         TEXT DEFAULT '0',
+            overtime_hours      TEXT DEFAULT '0',
+            hourly_rate         TEXT NOT NULL,
+            gross_pay           TEXT NOT NULL,
+            fica                TEXT DEFAULT '0',
+            federal_tax         TEXT DEFAULT '0',
+            state_tax           TEXT DEFAULT '0',
+            other_deductions    TEXT DEFAULT '0',
+            net_pay             TEXT NOT NULL,
+            fringe_paid         TEXT DEFAULT '0',
+            fringe_method       TEXT DEFAULT 'cash'
+                                CHECK(fringe_method IN ('cash','plan')),
+            company_id          TEXT NOT NULL REFERENCES company(id) ON DELETE RESTRICT,
+            created_at          TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    tables_created += 1
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_cccpe_job ON constructclaw_certified_payroll_entry(job_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_cccpe_company ON constructclaw_certified_payroll_entry(company_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_cccpe_week ON constructclaw_certified_payroll_entry(week_ending)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_cccpe_employee ON constructclaw_certified_payroll_entry(employee_name)")
+    indexes_created += 4
+
+    # -------------------------------------------------------------------
+    # 31. constructclaw_time_entry -- individual labor time tracking
+    # -------------------------------------------------------------------
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS constructclaw_time_entry (
+            id                  TEXT PRIMARY KEY,
+            job_id              TEXT NOT NULL REFERENCES constructclaw_job(id) ON DELETE RESTRICT,
+            cost_code_id        TEXT,
+            employee_name       TEXT NOT NULL,
+            employee_id         TEXT,
+            trade               TEXT,
+            work_date           TEXT NOT NULL,
+            regular_hours       TEXT DEFAULT '0',
+            overtime_hours      TEXT DEFAULT '0',
+            double_time_hours   TEXT DEFAULT '0',
+            total_hours         TEXT DEFAULT '0',
+            hourly_rate         TEXT DEFAULT '0',
+            total_cost          TEXT DEFAULT '0',
+            description         TEXT,
+            approved_by         TEXT,
+            approved_at         TEXT,
+            status              TEXT DEFAULT 'draft'
+                                CHECK(status IN ('draft','submitted','approved','rejected')),
+            company_id          TEXT NOT NULL REFERENCES company(id) ON DELETE RESTRICT,
+            created_at          TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    tables_created += 1
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_ccte_job ON constructclaw_time_entry(job_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_ccte_company ON constructclaw_time_entry(company_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_ccte_date ON constructclaw_time_entry(work_date)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_ccte_employee ON constructclaw_time_entry(employee_name)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_ccte_status ON constructclaw_time_entry(status)")
+    indexes_created += 5
 
     conn.commit()
     conn.close()
