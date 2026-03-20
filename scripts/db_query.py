@@ -4,7 +4,7 @@
 Construction project management: job costing, estimating, subcontractors,
 AIA billing, daily reports, change orders, RFIs, safety, project controls,
 equipment scheduling, certified payroll, labor time tracking.
-Routes all 130 actions across 11 domain modules.
+Routes all 157 actions across 12 domain modules.
 
 Usage: python3 db_query.py --action <action-name> [--flags ...]
 Output: JSON to stdout, exit 0 on success, exit 1 on error.
@@ -45,6 +45,7 @@ from safety import ACTIONS as SAFETY_ACTIONS
 from controls import ACTIONS as CONTROL_ACTIONS
 from reports import ACTIONS as REPORT_ACTIONS
 from field_ops import ACTIONS as FIELD_OPS_ACTIONS
+from project_mgmt import ACTIONS as PROJECT_MGMT_ACTIONS
 
 # ---------------------------------------------------------------------------
 # Merge all domain actions into one router
@@ -64,6 +65,7 @@ ACTIONS.update(SAFETY_ACTIONS)
 ACTIONS.update(CONTROL_ACTIONS)
 ACTIONS.update(REPORT_ACTIONS)
 ACTIONS.update(FIELD_OPS_ACTIONS)
+ACTIONS.update(PROJECT_MGMT_ACTIONS)
 
 
 def main():
@@ -317,6 +319,56 @@ def main():
     parser.add_argument("--double-time-hours")
     parser.add_argument("--work-date")
     parser.add_argument("--time-status")
+
+    # -- Permits & Inspection --
+    parser.add_argument("--permit-id")
+    parser.add_argument("--permit-type")
+    parser.add_argument("--permit-number")
+    parser.add_argument("--permit-status")
+    parser.add_argument("--application-date")
+    parser.add_argument("--approval-date")
+    parser.add_argument("--expiration-date")
+    parser.add_argument("--inspection-date")
+    parser.add_argument("--inspection-result")
+    parser.add_argument("--correction-notes")
+
+    # -- Punch List --
+    parser.add_argument("--punch-item-id")
+    parser.add_argument("--punch-status")
+    parser.add_argument("--photo-url")
+    parser.add_argument("--completion-date")
+    parser.add_argument("--subcontractor-id")
+
+    # -- Material Procurement --
+    parser.add_argument("--material-id")
+
+    # -- Insurance & Bond --
+    parser.add_argument("--document-type")
+    parser.add_argument("--carrier")
+    parser.add_argument("--policy-number")
+    parser.add_argument("--coverage-amount")
+
+    # -- Warranty Tracking --
+    parser.add_argument("--warranty-id")
+    parser.add_argument("--warranty-type")
+    parser.add_argument("--warranty-status")
+    parser.add_argument("--system")
+    parser.add_argument("--contact-info")
+
+    # -- Milestones / CPM --
+    parser.add_argument("--milestone-id")
+    parser.add_argument("--milestone-status")
+    parser.add_argument("--planned-date")
+    parser.add_argument("--actual-date")
+    parser.add_argument("--predecessor-id")
+    parser.add_argument("--dependency-type")
+    parser.add_argument("--lag-days")
+    parser.add_argument("--is-critical")
+
+    # -- Drawing --
+    parser.add_argument("--spec-section")
+    parser.add_argument("--discipline")
+    parser.add_argument("--sheet-number")
 
     # -- Shared --
     parser.add_argument("--notes")

@@ -931,6 +931,154 @@ def init_constructclaw_schema(db_path: str = DB_PATH) -> dict:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_ccte_status ON constructclaw_time_entry(status)")
     indexes_created += 5
 
+    # -------------------------------------------------------------------
+    # 32. constructclaw_permit -- building permits & inspections
+    # -------------------------------------------------------------------
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS constructclaw_permit (
+            id                  TEXT PRIMARY KEY,
+            job_id              TEXT NOT NULL REFERENCES constructclaw_job(id) ON DELETE RESTRICT,
+            permit_type         TEXT NOT NULL,
+            permit_number       TEXT,
+            jurisdiction        TEXT,
+            application_date    TEXT,
+            approval_date       TEXT,
+            expiration_date     TEXT,
+            inspection_required INTEGER DEFAULT 1,
+            inspection_date     TEXT,
+            inspection_result   TEXT CHECK(inspection_result IN ('pass','fail','conditional','pending')),
+            inspector_name      TEXT,
+            correction_notes    TEXT,
+            status              TEXT DEFAULT 'applied'
+                                CHECK(status IN ('applied','approved','expired','closed')),
+            company_id          TEXT NOT NULL REFERENCES company(id) ON DELETE RESTRICT,
+            created_at          TEXT DEFAULT (datetime('now'))
+        )
+    """)
+    tables_created += 1
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_ccperm_job ON constructclaw_permit(job_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_ccperm_company ON constructclaw_permit(company_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_ccperm_status ON constructclaw_permit(status)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_ccperm_expiry ON constructclaw_permit(expiration_date)")
+    indexes_created += 4
+
+    # -------------------------------------------------------------------
+    # 33. constructclaw_punch_list_item -- closeout punch list
+    # -------------------------------------------------------------------
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS constructclaw_punch_list_item (
+            id                  TEXT PRIMARY KEY,
+            job_id              TEXT NOT NULL REFERENCES constructclaw_job(id) ON DELETE RESTRICT,
+            description         TEXT NOT NULL,
+            location            TEXT,
+            assigned_to         TEXT,
+            subcontractor_id    TEXT,
+            priority            TEXT DEFAULT 'normal'
+                                CHECK(priority IN ('critical','high','normal','low')),
+            photo_url           TEXT,
+            completion_date     TEXT,
+            status              TEXT DEFAULT 'open'
+                                CHECK(status IN ('open','in_progress','completed','verified')),
+            company_id          TEXT NOT NULL REFERENCES company(id) ON DELETE RESTRICT,
+            created_at          TEXT DEFAULT (datetime('now'))
+        )
+    """)
+    tables_created += 1
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_ccpunch_job ON constructclaw_punch_list_item(job_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_ccpunch_company ON constructclaw_punch_list_item(company_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_ccpunch_status ON constructclaw_punch_list_item(status)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_ccpunch_priority ON constructclaw_punch_list_item(priority)")
+    indexes_created += 4
+
+    # -------------------------------------------------------------------
+    # 34. constructclaw_insurance_bond -- insurance & bond tracking
+    # -------------------------------------------------------------------
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS constructclaw_insurance_bond (
+            id                  TEXT PRIMARY KEY,
+            job_id              TEXT,
+            subcontractor_id    TEXT,
+            document_type       TEXT NOT NULL
+                                CHECK(document_type IN ('coi','bid_bond','performance_bond','payment_bond','builders_risk')),
+            carrier             TEXT,
+            policy_number       TEXT,
+            coverage_amount     TEXT DEFAULT '0',
+            effective_date      TEXT,
+            expiration_date     TEXT,
+            verified            INTEGER DEFAULT 0,
+            verified_by         TEXT,
+            verified_date       TEXT,
+            status              TEXT DEFAULT 'active'
+                                CHECK(status IN ('active','expired','cancelled')),
+            company_id          TEXT NOT NULL REFERENCES company(id) ON DELETE RESTRICT,
+            created_at          TEXT DEFAULT (datetime('now'))
+        )
+    """)
+    tables_created += 1
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_ccbond_company ON constructclaw_insurance_bond(company_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_ccbond_job ON constructclaw_insurance_bond(job_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_ccbond_status ON constructclaw_insurance_bond(status)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_ccbond_expiry ON constructclaw_insurance_bond(expiration_date)")
+    indexes_created += 4
+
+    # -------------------------------------------------------------------
+    # 35. constructclaw_warranty -- warranty tracking
+    # -------------------------------------------------------------------
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS constructclaw_warranty (
+            id                  TEXT PRIMARY KEY,
+            job_id              TEXT NOT NULL REFERENCES constructclaw_job(id) ON DELETE RESTRICT,
+            trade               TEXT,
+            system              TEXT NOT NULL,
+            subcontractor_id    TEXT,
+            start_date          TEXT NOT NULL,
+            end_date            TEXT NOT NULL,
+            warranty_type       TEXT DEFAULT 'standard'
+                                CHECK(warranty_type IN ('standard','extended','manufacturer')),
+            description         TEXT,
+            contact_info        TEXT,
+            status              TEXT DEFAULT 'active'
+                                CHECK(status IN ('active','expired','claimed')),
+            company_id          TEXT NOT NULL REFERENCES company(id) ON DELETE RESTRICT,
+            created_at          TEXT DEFAULT (datetime('now'))
+        )
+    """)
+    tables_created += 1
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_ccwarr_job ON constructclaw_warranty(job_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_ccwarr_company ON constructclaw_warranty(company_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_ccwarr_status ON constructclaw_warranty(status)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_ccwarr_end ON constructclaw_warranty(end_date)")
+    indexes_created += 4
+
+    # -------------------------------------------------------------------
+    # 36. constructclaw_milestone -- project scheduling / CPM milestones
+    # -------------------------------------------------------------------
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS constructclaw_milestone (
+            id                  TEXT PRIMARY KEY,
+            job_id              TEXT NOT NULL REFERENCES constructclaw_job(id) ON DELETE RESTRICT,
+            name                TEXT NOT NULL,
+            description         TEXT,
+            planned_date        TEXT,
+            actual_date         TEXT,
+            predecessor_id      TEXT,
+            dependency_type     TEXT DEFAULT 'finish_to_start'
+                                CHECK(dependency_type IN ('finish_to_start','start_to_start','finish_to_finish','start_to_finish')),
+            lag_days            INTEGER DEFAULT 0,
+            is_critical         INTEGER DEFAULT 0,
+            status              TEXT DEFAULT 'pending'
+                                CHECK(status IN ('pending','in_progress','completed','delayed')),
+            company_id          TEXT NOT NULL REFERENCES company(id) ON DELETE RESTRICT,
+            created_at          TEXT DEFAULT (datetime('now'))
+        )
+    """)
+    tables_created += 1
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_ccms_job ON constructclaw_milestone(job_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_ccms_company ON constructclaw_milestone(company_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_ccms_status ON constructclaw_milestone(status)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_ccms_planned ON constructclaw_milestone(planned_date)")
+    indexes_created += 4
+
     conn.commit()
     conn.close()
 
