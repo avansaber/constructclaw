@@ -24,7 +24,7 @@ from unittest.mock import patch
 TESTS_DIR = os.path.dirname(os.path.abspath(__file__))
 MODULE_DIR = os.path.dirname(TESTS_DIR)          # constructclaw/scripts/
 ROOT_DIR = os.path.dirname(MODULE_DIR)            # constructclaw/
-SRC_DIR = os.path.dirname(ROOT_DIR)               # src/
+SRC_DIR = os.path.dirname(ROOT_DIR)               # source/
 SETUP_DIR = os.path.join(SRC_DIR, "erpclaw", "scripts", "erpclaw-setup")
 INIT_SCHEMA_PATH = os.path.join(SETUP_DIR, "init_schema.py")
 VERTICAL_INIT_PATH = os.path.join(ROOT_DIR, "init_db.py")
