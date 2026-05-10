@@ -366,7 +366,6 @@ def main():
     parser.add_argument("--is-critical")
 
     # -- Drawing --
-    parser.add_argument("--spec-section")
     parser.add_argument("--discipline")
     parser.add_argument("--sheet-number")
 
