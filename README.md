@@ -1,6 +1,6 @@
 # ConstructClaw
 
-Construction project management for [ERPClaw](https://github.com/avansaber/erpclaw). Job costing, estimating, subcontractor management, AIA billing, daily field reports, change orders, RFIs, submittals, safety compliance, and earned value management. 114 actions across 10 domains.
+Construction project management for [ERPClaw](https://github.com/avansaber/erpclaw). Job costing, estimating, subcontractor management, AIA billing, daily field reports, change orders, RFIs, submittals, safety compliance, and earned value management. <!-- SYNC:value:module.constructclaw.actions -->160<!-- /SYNC --> actions across 10 domains.
 
 ## Features
 
