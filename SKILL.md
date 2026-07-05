@@ -1,6 +1,6 @@
 ---
 name: constructclaw
-version: 1.0.0
+version: 1.1.0
 description: Construction Project Management -- 159 actions across 12 domains. Job costing, estimating, bids, subcontractors, AIA billing, SOV, daily reports, change orders, RFIs, submittals, safety/OSHA, project controls with earned value, field ops, and project management.
 author: AvanSaber
 homepage: https://github.com/avansaber/constructclaw
@@ -113,8 +113,8 @@ python3 {baseDir}/scripts/db_query.py --action status
 | `construction-list-schedules-of-values` | List SOVs |
 | `construction-add-sov-line` | Add SOV line item |
 | `construction-list-sov-lines` | List SOV lines |
-| `construction-add-progress-bill` | Create progress bill |
-| `construction-get-progress-bill` | Get progress bill |
+| `construction-add-progress-bill` | Create progress bill; with `--sov-id` derives G703 lines from SOV and rolls header totals up from them (flat totals overridden) |
+| `construction-get-progress-bill` | Get progress bill with G703 continuation-sheet lines |
 | `construction-list-progress-bills` | List progress bills |
 | `construction-submit-progress-bill` | Submit progress bill |
 | `construction-approve-progress-bill` | Approve progress bill |

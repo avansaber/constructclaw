@@ -39,6 +39,11 @@ def _d(val, default="0"):
     return Decimal(str(val))
 
 
+def _q2(val):
+    """Quantize a value to 2 decimal places (HALF_UP); return its string form."""
+    return str(_d(val).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+
+
 # ---------------------------------------------------------------------------
 # add-schedule-of-values
 # ---------------------------------------------------------------------------
@@ -171,6 +176,66 @@ def list_sov_lines(conn, args):
 # ---------------------------------------------------------------------------
 # add-progress-bill
 # ---------------------------------------------------------------------------
+def _derive_progress_bill_lines(sov_lines):
+    """Derive AIA G703 continuation-sheet line values from SOV line rows.
+
+    For each ``constructclaw_sov_line`` compute the G703 columns:
+      total_completed  = previous_completed + this_period + materials_stored (Col G)
+      pct_complete     = total_completed / scheduled_value * 100 (Col G / C)
+      balance_to_finish= scheduled_value - total_completed (Col C - G)
+      retention_amount = retention_pct% of total_completed
+    total_completed is recomputed from its components so each derived line is
+    self-consistent even if the feeder SOV line carries a stale roll-up value.
+
+    Returns (rows, header_total_completed, header_total_retention). The two
+    header totals are footed from the QUANTIZED per-line values that are
+    persisted (sum-then-store, not store-then-sum), so the G702 header always
+    foots to its G703 lines to the cent — a raw-sum-then-quantize header would
+    drift when a per-line value (e.g. retention_pct% of total_completed) carries
+    a sub-cent that ROUND_HALF_UP resolves differently line-by-line vs in bulk.
+    """
+    rows = []
+    sum_completed = Decimal("0")
+    sum_retention = Decimal("0")
+    for sl in sov_lines:
+        scheduled_value = _d(sl["scheduled_value"])
+        previous_completed = _d(sl["previous_completed"])
+        this_period = _d(sl["this_period"])
+        materials_stored = _d(sl["materials_stored"])
+        retention_pct = _d(sl["retention_pct"])
+
+        line_total_completed = previous_completed + this_period + materials_stored
+        retention_amount = (retention_pct / Decimal("100")) * line_total_completed
+        balance_to_finish = scheduled_value - line_total_completed
+        if scheduled_value > 0:
+            pct_complete = (line_total_completed / scheduled_value) * Decimal("100")
+        else:
+            pct_complete = Decimal("0")
+
+        # Quantize each column to the cent BEFORE it is both persisted and
+        # rolled up, so the header footing == the sum of the stored line values.
+        q_total_completed = _q2(line_total_completed)
+        q_retention_amount = _q2(retention_amount)
+        sum_completed += Decimal(q_total_completed)
+        sum_retention += Decimal(q_retention_amount)
+
+        rows.append({
+            "id": str(uuid.uuid4()),
+            "sov_line_id": sl["id"],
+            "item_number": sl["item_number"],
+            "description": sl["description"],
+            "scheduled_value": _q2(scheduled_value),
+            "previous_completed": _q2(previous_completed),
+            "this_period": _q2(this_period),
+            "materials_stored": _q2(materials_stored),
+            "total_completed": q_total_completed,
+            "pct_complete": _q2(pct_complete),
+            "balance_to_finish": _q2(balance_to_finish),
+            "retention_amount": q_retention_amount,
+        })
+    return rows, _q2(sum_completed), _q2(sum_retention)
+
+
 def add_progress_bill(conn, args):
     if not getattr(args, "company_id", None):
         err("--company-id is required")
@@ -181,6 +246,27 @@ def add_progress_bill(conn, args):
     if not conn.execute(Q.from_(Table("constructclaw_job")).select(Field("id")).where(Field("id") == P()).get_sql(), (job_id,)).fetchone():
         err(f"Job {job_id} not found")
 
+    sov_id = getattr(args, "sov_id", None)
+
+    # G703 continuation-sheet derivation: when the bill is linked to an SOV
+    # that carries line items, derive one progress_bill_line per SOV line and
+    # roll the header totals up from those derived lines. The derived totals
+    # WIN over any caller-supplied flat --total-completed/--total-retention
+    # (which are reported back as overridden). With no SOV, or an SOV that has
+    # no lines, the legacy header-only path is preserved unchanged.
+    sov_lines = []
+    if sov_id:
+        sov_lines = conn.execute(
+            Q.from_(_t_sov_line).select(_t_sov_line.star)
+             .where(_t_sov_line.sov_id == P())
+             .orderby(_t_sov_line.item_number).get_sql(),
+            (sov_id,),
+        ).fetchall()
+    derived = bool(sov_lines)
+
+    caller_total_completed = getattr(args, "total_completed", None)
+    caller_total_retention = getattr(args, "total_retention", None)
+
     # Get next bill number
     q = Q.from_(_t_pb).select(fn.Coalesce(fn.Max(_t_pb.bill_number), 0).as_("mx")).where(_t_pb.job_id == P())
     max_row = conn.execute(q.get_sql(), (job_id,)).fetchone()
@@ -189,8 +275,12 @@ def add_progress_bill(conn, args):
     pb_id = str(uuid.uuid4())
     ns = get_next_name(conn, "constructclaw_progress_bill", company_id=args.company_id)
 
-    total_completed = getattr(args, "total_completed", None) or "0"
-    total_retention = getattr(args, "total_retention", None) or "0"
+    line_rows = []
+    if derived:
+        line_rows, total_completed, total_retention = _derive_progress_bill_lines(sov_lines)
+    else:
+        total_completed = caller_total_completed or "0"
+        total_retention = caller_total_retention or "0"
 
     # Get previous bills total
     # PyPika: skipped — CAST inside COALESCE/SUM aggregate
@@ -198,10 +288,10 @@ def add_progress_bill(conn, args):
         "SELECT COALESCE(SUM(CAST(current_due AS NUMERIC)), 0) as total FROM constructclaw_progress_bill WHERE job_id = ? AND bill_status != 'rejected'",
         (job_id,),
     ).fetchone()
-    total_previous = str(_d(prev_row["total"]).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+    total_previous = _q2(prev_row["total"])
 
     current_due = _d(total_completed) - _d(total_retention) - _d(total_previous)
-    current_due_str = str(current_due.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+    current_due_str = _q2(current_due)
 
     sql, _ = insert_row("constructclaw_progress_bill", {"id": P(), "naming_series": P(), "job_id": P(), "sov_id": P(), "bill_number": P(), "period_from": P(), "period_to": P(), "total_completed": P(), "total_retention": P(), "total_previous": P(), "current_due": P(), "notes": P(), "company_id": P()})
 
@@ -209,7 +299,7 @@ def add_progress_bill(conn, args):
     conn.execute(sql,
         (
             pb_id, ns, job_id,
-            getattr(args, "sov_id", None),
+            sov_id,
             bill_number,
             getattr(args, "period_from", None),
             getattr(args, "period_to", None),
@@ -219,10 +309,29 @@ def add_progress_bill(conn, args):
             args.company_id,
         ),
     )
+
+    # Write the derived G703 continuation-sheet lines in the same transaction.
+    if line_rows:
+        line_sql, _ = insert_row("constructclaw_progress_bill_line", {
+            "id": P(), "bill_id": P(), "sov_line_id": P(), "item_number": P(),
+            "description": P(), "scheduled_value": P(), "previous_completed": P(),
+            "this_period": P(), "materials_stored": P(), "total_completed": P(),
+            "pct_complete": P(), "balance_to_finish": P(), "retention_amount": P(),
+            "company_id": P()})
+        for lr in line_rows:
+            conn.execute(line_sql, (
+                lr["id"], pb_id, lr["sov_line_id"], lr["item_number"],
+                lr["description"], lr["scheduled_value"], lr["previous_completed"],
+                lr["this_period"], lr["materials_stored"], lr["total_completed"],
+                lr["pct_complete"], lr["balance_to_finish"], lr["retention_amount"],
+                args.company_id,
+            ))
+
     audit(conn, SKILL, "construction-add-progress-bill", "constructclaw_progress_bill", pb_id,
           new_values={"bill_number": bill_number, "current_due": current_due_str})
     conn.commit()
-    ok({
+
+    result = {
         "progress_bill_id": pb_id, "naming_series": ns,
         "bill_number": bill_number,
         "total_completed": total_completed,
@@ -230,7 +339,20 @@ def add_progress_bill(conn, args):
         "total_previous": total_previous,
         "current_due": current_due_str,
         "bill_status": "draft",
-    })
+        "totals_source": "sov_lines" if derived else "caller",
+    }
+    if derived:
+        result["line_count"] = len(line_rows)
+        # BDFL condition 3: when SOV lines drive the header totals, any flat
+        # totals the caller supplied are ignored — surface that explicitly so
+        # the override is observable to the existing caller class.
+        if caller_total_completed is not None or caller_total_retention is not None:
+            result["caller_totals_overridden"] = True
+            result["overridden_totals"] = {
+                "total_completed": caller_total_completed if caller_total_completed is not None else "0",
+                "total_retention": caller_total_retention if caller_total_retention is not None else "0",
+            }
+    ok(result)
 
 
 # ---------------------------------------------------------------------------
