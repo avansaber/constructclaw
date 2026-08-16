@@ -9,11 +9,13 @@ import uuid
 from datetime import date as _date, datetime
 from decimal import Decimal, ROUND_HALF_UP
 
-sys.path.insert(0, os.path.join(os.path.expanduser(os.environ.get("ERPCLAW_HOME", "~/.openclaw/erpclaw")), "lib"))
+import importlib.util
+if importlib.util.find_spec("erpclaw_lib") is None:
+    sys.path.insert(0, os.path.join(os.path.expanduser(os.environ.get("ERPCLAW_HOME", "~/.openclaw/erpclaw")), "lib"))
 from erpclaw_lib.naming import get_next_name, register_prefix
 from erpclaw_lib.response import ok, err, row_to_dict
 from erpclaw_lib.audit import audit
-from erpclaw_lib.query import Q, P, Table, Field, fn, Order, insert_row, LiteralValue, dynamic_update
+from erpclaw_lib.query import Field, Order, P, Q, Table, dynamic_update, fn, insert_row, now as sql_now
 
 SKILL = "constructclaw"
 
@@ -140,7 +142,7 @@ def update_incident(conn, args):
     if not changed:
         err("No fields to update")
 
-    data["updated_at"] = LiteralValue("datetime('now')")
+    data["updated_at"] = sql_now()
     sql, params = dynamic_update("constructclaw_incident", data, {"id": inc_id})
     conn.execute(sql, params)
     audit(conn, SKILL, "construction-update-incident", "constructclaw_incident", inc_id,
@@ -223,7 +225,7 @@ def close_incident(conn, args):
         err("Incident is already closed")
 
     sql, params = dynamic_update("constructclaw_incident",
-        {"incident_status": "closed", "updated_at": LiteralValue("datetime('now')")},
+        {"incident_status": "closed", "updated_at": sql_now()},
         {"id": inc_id})
     conn.execute(sql, params)
     audit(conn, SKILL, "construction-close-incident", "constructclaw_incident", inc_id,
@@ -369,7 +371,7 @@ def expire_safety_cert(conn, args):
         err(f"Cert is already {row['cert_status']}")
 
     sql, params = dynamic_update("constructclaw_safety_cert",
-        {"cert_status": "expired", "updated_at": LiteralValue("datetime('now')")},
+        {"cert_status": "expired", "updated_at": sql_now()},
         {"id": sc_id})
     conn.execute(sql, params)
     audit(conn, SKILL, "construction-expire-safety-cert", "constructclaw_safety_cert", sc_id,

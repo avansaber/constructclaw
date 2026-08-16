@@ -9,11 +9,13 @@ import uuid
 from datetime import date as _date
 from decimal import Decimal, ROUND_HALF_UP
 
-sys.path.insert(0, os.path.join(os.path.expanduser(os.environ.get("ERPCLAW_HOME", "~/.openclaw/erpclaw")), "lib"))
+import importlib.util
+if importlib.util.find_spec("erpclaw_lib") is None:
+    sys.path.insert(0, os.path.join(os.path.expanduser(os.environ.get("ERPCLAW_HOME", "~/.openclaw/erpclaw")), "lib"))
 from erpclaw_lib.naming import get_next_name, register_prefix
 from erpclaw_lib.response import ok, err, row_to_dict
 from erpclaw_lib.audit import audit
-from erpclaw_lib.query import Q, P, Table, Field, fn, Order, insert_row, LiteralValue, dynamic_update
+from erpclaw_lib.query import Field, Order, P, Q, Table, dynamic_update, fn, insert_row, now as sql_now
 
 SKILL = "constructclaw"
 
@@ -101,7 +103,7 @@ def update_daily_report(conn, args):
     if not changed:
         err("No fields to update")
 
-    data["updated_at"] = LiteralValue("datetime('now')")
+    data["updated_at"] = sql_now()
     sql, params = dynamic_update("constructclaw_daily_report", data, {"id": dr_id})
     conn.execute(sql, params)
     audit(conn, SKILL, "construction-update-daily-report", "constructclaw_daily_report", dr_id,
@@ -192,7 +194,7 @@ def submit_daily_report(conn, args):
         err(f"Daily report must be in draft status to submit (current: {row['report_status']})")
 
     sql, params = dynamic_update("constructclaw_daily_report",
-        {"report_status": "submitted", "updated_at": LiteralValue("datetime('now')")},
+        {"report_status": "submitted", "updated_at": sql_now()},
         {"id": dr_id})
     conn.execute(sql, params)
     audit(conn, SKILL, "construction-submit-daily-report", "constructclaw_daily_report", dr_id,

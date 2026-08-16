@@ -13,11 +13,13 @@ import uuid
 from datetime import date as _date, datetime
 from decimal import Decimal, ROUND_HALF_UP
 
-sys.path.insert(0, os.path.join(os.path.expanduser(os.environ.get("ERPCLAW_HOME", "~/.openclaw/erpclaw")), "lib"))
+import importlib.util
+if importlib.util.find_spec("erpclaw_lib") is None:
+    sys.path.insert(0, os.path.join(os.path.expanduser(os.environ.get("ERPCLAW_HOME", "~/.openclaw/erpclaw")), "lib"))
 from erpclaw_lib.response import ok, err, row_to_dict
 from erpclaw_lib.audit import audit
 from erpclaw_lib.query import (
-    Q, P, Table, Field, fn, Order, insert_row, LiteralValue, dynamic_update,
+    Q, P, Table, Field, fn, Order, insert_row, LiteralValue, dynamic_update, now as sql_now,
 )
 
 SKILL = "constructclaw"
@@ -132,7 +134,7 @@ def release_equipment(conn, args):
     if row["status"] in ("completed", "cancelled"):
         err(f"Assignment is already {row['status']}")
 
-    data = {"status": "completed", "updated_at": LiteralValue("datetime('now')")}
+    data = {"status": "completed", "updated_at": sql_now()}
     end_date = getattr(args, "end_date", None)
     if end_date:
         data["end_date"] = end_date
@@ -196,7 +198,7 @@ def update_equipment_assignment(conn, args):
     if not changed:
         err("No fields to update")
 
-    data["updated_at"] = LiteralValue("datetime('now')")
+    data["updated_at"] = sql_now()
     sql, params = dynamic_update("constructclaw_equipment_assignment", data, {"id": ea_id})
     conn.execute(sql, params)
     audit(conn, SKILL, "construction-update-equipment-assignment",
@@ -760,7 +762,7 @@ def approve_time_entry(conn, args):
 
     data = {
         "status": "approved",
-        "approved_at": LiteralValue("datetime('now')"),
+        "approved_at": sql_now(),
     }
     approver = getattr(args, "approved_by", None)
     if approver:

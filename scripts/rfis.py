@@ -7,11 +7,13 @@ import os
 import sys
 import uuid
 
-sys.path.insert(0, os.path.join(os.path.expanduser(os.environ.get("ERPCLAW_HOME", "~/.openclaw/erpclaw")), "lib"))
+import importlib.util
+if importlib.util.find_spec("erpclaw_lib") is None:
+    sys.path.insert(0, os.path.join(os.path.expanduser(os.environ.get("ERPCLAW_HOME", "~/.openclaw/erpclaw")), "lib"))
 from erpclaw_lib.naming import get_next_name, register_prefix
 from erpclaw_lib.response import ok, err, row_to_dict
 from erpclaw_lib.audit import audit
-from erpclaw_lib.query import Q, P, Table, Field, fn, Order, insert_row, LiteralValue, dynamic_update
+from erpclaw_lib.query import Field, Order, P, Q, Table, dynamic_update, fn, insert_row, now as sql_now, today as sql_today
 
 SKILL = "constructclaw"
 
@@ -115,7 +117,7 @@ def update_rfi(conn, args):
     if not changed:
         err("No fields to update")
 
-    data["updated_at"] = LiteralValue("datetime('now')")
+    data["updated_at"] = sql_now()
     sql, params = dynamic_update("constructclaw_rfi", data, {"id": rfi_id})
     conn.execute(sql, params)
     audit(conn, SKILL, "construction-update-rfi", "constructclaw_rfi", rfi_id,
@@ -203,8 +205,8 @@ def respond_to_rfi(conn, args):
     sql, params = dynamic_update("constructclaw_rfi", {
         "response": args.response,
         "rfi_status": "responded",
-        "date_responded": LiteralValue("date('now')"),
-        "updated_at": LiteralValue("datetime('now')"),
+        "date_responded": sql_today(),
+        "updated_at": sql_now(),
     }, {"id": rfi_id})
     conn.execute(sql, params)
     audit(conn, SKILL, "construction-respond-to-rfi", "constructclaw_rfi", rfi_id,
@@ -227,7 +229,7 @@ def close_rfi(conn, args):
         err(f"RFI must be open or responded to close (current: {row['rfi_status']})")
 
     sql, params = dynamic_update("constructclaw_rfi",
-        {"rfi_status": "closed", "updated_at": LiteralValue("datetime('now')")},
+        {"rfi_status": "closed", "updated_at": sql_now()},
         {"id": rfi_id})
     conn.execute(sql, params)
     audit(conn, SKILL, "construction-close-rfi", "constructclaw_rfi", rfi_id,
@@ -303,7 +305,7 @@ def update_submittal(conn, args):
     if not changed:
         err("No fields to update")
 
-    data["updated_at"] = LiteralValue("datetime('now')")
+    data["updated_at"] = sql_now()
     sql, params = dynamic_update("constructclaw_submittal", data, {"id": sub_id})
     conn.execute(sql, params)
     audit(conn, SKILL, "construction-update-submittal", "constructclaw_submittal", sub_id,
@@ -379,8 +381,8 @@ def review_submittal(conn, args):
     sql, params = dynamic_update("constructclaw_submittal", {
         "submittal_status": decision,
         "review_comments": review_comments,
-        "date_returned": LiteralValue("date('now')"),
-        "updated_at": LiteralValue("datetime('now')"),
+        "date_returned": sql_today(),
+        "updated_at": sql_now(),
     }, {"id": sub_id})
     conn.execute(sql, params)
     audit(conn, SKILL, "construction-review-submittal", "constructclaw_submittal", sub_id,
