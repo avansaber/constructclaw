@@ -6,6 +6,7 @@ Covers: subcontracts, subcontract lines, approve subcontract,
 """
 import pytest
 from construct_helpers import call_action, ns, is_ok, is_error, load_db_query, _uuid
+from buying_harness import delegate_buying_in_process, seed_supplier
 
 
 @pytest.fixture
@@ -139,14 +140,21 @@ class TestSubcontracts:
 # ═══════════════════════════════════════════════════════════════════════════
 
 class TestPayApplications:
+    @pytest.fixture(autouse=True)
+    def _buying_bridge(self, conn, monkeypatch):
+        """Setup only: approvals post their payable through the buying module."""
+        return delegate_buying_in_process(conn, monkeypatch)
+
     def _setup(self, conn, env, mod):
         job_id = _add_job(conn, env, mod)
+        supplier_id = seed_supplier(conn, env["company_id"])
         r = call_action(mod.ACTIONS["construction-add-subcontract"], conn, ns(
             company_id=env["company_id"], job_id=job_id,
             subcontractor_name="PA Sub", trade="hvac", scope_of_work=None,
             original_amount="200000", retention_pct="10",
             insurance_expiry=None, license_number=None,
             start_date=None, end_date=None, notes=None,
+            supplier_id=supplier_id,
         ))
         return job_id, r["subcontract_id"]
 

@@ -25,6 +25,7 @@ _t_pb = Table("constructclaw_progress_bill")
 _t_pb_line = Table("constructclaw_progress_bill_line")
 _t_ret = Table("constructclaw_retention")
 _t_job = Table("constructclaw_job")
+_t_cco = Table("constructclaw_cco")
 
 register_prefix("constructclaw_schedule_of_values", "CCSOV-")
 register_prefix("constructclaw_progress_bill", "CCPB-")
@@ -176,6 +177,61 @@ def list_sov_lines(conn, args):
 
 
 # ---------------------------------------------------------------------------
+# record-sov-progress
+# ---------------------------------------------------------------------------
+def record_sov_progress(conn, args):
+    line_id = getattr(args, "sov_line_id", None)
+    if not line_id:
+        err("--sov-line-id is required")
+    c_raw = getattr(args, "completed_to_date", None)
+    if c_raw is None or (isinstance(c_raw, str) and c_raw == ""):
+        err("--completed-to-date is required")
+    row = conn.execute(Q.from_(_t_sov_line).select(_t_sov_line.star).where(_t_sov_line.id == P()).get_sql(), (line_id,)).fetchone()
+    if not row:
+        err(f"SOV line {line_id} not found")
+    item_number = row["item_number"]
+    try:
+        c_val = Decimal(str(c_raw))
+    except Exception:
+        err("--completed-to-date must be a non-negative amount")
+    if not c_val.is_finite() or c_val < 0:
+        err("--completed-to-date must be a non-negative amount")
+    m_raw = getattr(args, "materials_stored", None)
+    if m_raw is None:
+        m_raw = row["materials_stored"]
+    try:
+        m_val = Decimal(str(m_raw))
+    except Exception:
+        err("--materials-stored must be a non-negative amount")
+    if not m_val.is_finite() or m_val < 0:
+        err("--materials-stored must be a non-negative amount")
+    c_str = _q2(c_val)
+    m_str = _q2(m_val)
+    p_str = _q2(row["previous_completed"])
+    s_str = _q2(row["scheduled_value"])
+    if Decimal(c_str) < Decimal(p_str):
+        err(f"Completed to date {c_str} is below the {p_str} already billed on SOV line {item_number}")
+    if Decimal(c_str) + Decimal(m_str) > Decimal(s_str):
+        err(f"Completed to date {c_str} plus materials stored {m_str} exceeds the scheduled value {s_str} of SOV line {item_number}")
+    new_this = _q2(Decimal(c_str) - Decimal(p_str))
+    new_bal = _q2(Decimal(s_str) - Decimal(c_str) - Decimal(m_str))
+    old_this = _q2(row["this_period"])
+    old_mat = _q2(row["materials_stored"])
+    guard_prev = row["previous_completed"]
+    uq = (Q.update(_t_sov_line).set(_t_sov_line.this_period, P()).set(_t_sov_line.materials_stored, P()).set(_t_sov_line.balance_to_finish, P()).where(_t_sov_line.id == P()).where(_t_sov_line.previous_completed == P()))
+    cur = conn.execute(uq.get_sql(), (new_this, m_str, new_bal, line_id, guard_prev))
+    if cur.rowcount != 1:
+        conn.rollback()
+        err(f"SOV line {item_number} changed while progress was being recorded; nothing was written")
+    audit(conn, SKILL, "construction-record-sov-progress", "constructclaw_sov_line", line_id,
+          old_values={"this_period": old_this, "materials_stored": old_mat},
+          new_values={"this_period": new_this, "materials_stored": m_str, "completed_to_date": c_str})
+    conn.commit()
+    ok({"sov_line_id": line_id, "item_number": item_number, "previous_completed": p_str,
+        "this_period": new_this, "materials_stored": m_str, "balance_to_finish": new_bal})
+
+
+# ---------------------------------------------------------------------------
 # add-progress-bill
 # ---------------------------------------------------------------------------
 def _derive_progress_bill_lines(sov_lines):
@@ -269,6 +325,33 @@ def add_progress_bill(conn, args):
     caller_total_completed = getattr(args, "total_completed", None)
     caller_total_retention = getattr(args, "total_retention", None)
 
+    line_rows = []
+    if derived:
+        line_rows, total_completed, total_retention = _derive_progress_bill_lines(sov_lines)
+    else:
+        total_completed = caller_total_completed or "0"
+        total_retention = caller_total_retention or "0"
+
+    job_row = conn.execute(
+        Q.from_(_t_job).select(_t_job.contract_amount, _t_job.contract_type).where(_t_job.id == P()).get_sql(),
+        (job_id,),
+    ).fetchone()
+    contract_type = job_row["contract_type"] if job_row else None
+    if contract_type not in ("cost_plus", "time_and_material"):
+        base_amount = _d(job_row["contract_amount"]) if job_row else Decimal("0")
+        cco_rows = conn.execute(
+            Q.from_(_t_cco).select(_t_cco.cost_change).where(_t_cco.job_id == P()).where(_t_cco.cco_status.isin([P(), P()])).get_sql(),
+            (job_id, "approved", "executed"),
+        ).fetchall()
+        approved_total = Decimal("0")
+        for cco_row in cco_rows:
+            approved_total += _d(cco_row["cost_change"])
+        revised = base_amount + approved_total
+        tc_capped = _d(total_completed).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        rev_capped = revised.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        if tc_capped > rev_capped:
+            err(f"Completed to date {_q2(tc_capped)} exceeds the contract amount {_q2(rev_capped)} for job {job_id}; approve a change order to bill more")
+
     # Get next bill number
     q = Q.from_(_t_pb).select(fn.Coalesce(fn.Max(_t_pb.bill_number), 0).as_("mx")).where(_t_pb.job_id == P())
     max_row = conn.execute(q.get_sql(), (job_id,)).fetchone()
@@ -276,13 +359,6 @@ def add_progress_bill(conn, args):
 
     pb_id = str(uuid.uuid4())
     ns = get_next_name(conn, "constructclaw_progress_bill", company_id=args.company_id)
-
-    line_rows = []
-    if derived:
-        line_rows, total_completed, total_retention = _derive_progress_bill_lines(sov_lines)
-    else:
-        total_completed = caller_total_completed or "0"
-        total_retention = caller_total_retention or "0"
 
     # Get previous bills total
     # PyPika: skipped — CAST inside COALESCE/SUM aggregate
@@ -329,8 +405,23 @@ def add_progress_bill(conn, args):
                 args.company_id,
             ))
 
-    audit(conn, SKILL, "construction-add-progress-bill", "constructclaw_progress_bill", pb_id,
-          new_values={"bill_number": bill_number, "current_due": current_due_str})
+    if derived:
+        for sl in sov_lines:
+            new_prev = _q2(_d(sl["previous_completed"]) + _d(sl["this_period"]))
+            guard_prev = sl["previous_completed"]
+            guard_this = sl["this_period"]
+            ruq = (Q.update(_t_sov_line).set(_t_sov_line.previous_completed, P()).set(_t_sov_line.this_period, P()).where(_t_sov_line.id == P()).where(_t_sov_line.previous_completed == P()).where(_t_sov_line.this_period == P()))
+            rcur = conn.execute(ruq.get_sql(), (new_prev, "0", sl["id"], guard_prev, guard_this))
+            if rcur.rowcount != 1:
+                conn.rollback()
+                err(f"SOV line {sl['item_number']} changed while the bill was being derived; nothing was written")
+
+    if derived:
+        audit(conn, SKILL, "construction-add-progress-bill", "constructclaw_progress_bill", pb_id,
+              new_values={"bill_number": bill_number, "current_due": current_due_str, "rolled_sov_lines": len(sov_lines)})
+    else:
+        audit(conn, SKILL, "construction-add-progress-bill", "constructclaw_progress_bill", pb_id,
+              new_values={"bill_number": bill_number, "current_due": current_due_str})
     conn.commit()
 
     result = {
@@ -427,13 +518,28 @@ def submit_progress_bill(conn, args):
 # ---------------------------------------------------------------------------
 # approve-progress-bill — creates sales_invoice via cross_skill
 # ---------------------------------------------------------------------------
+_POSTED_SALES_INVOICE_STATUSES = ("submitted", "partially_paid", "paid", "overdue")
+
+
+def _invoice_status(conn, si_id):
+    """Return the status of a sales_invoice row, or None when it is missing."""
+    t = Table("sales_invoice")
+    found = conn.execute(Q.from_(t).select(t.status).where(t.id == P()).get_sql(), (si_id,)).fetchone()
+    if not found:
+        return None
+    return found["status"]
+
+
 def approve_progress_bill(conn, args):
     """Approve a submitted progress bill and create a sales invoice.
 
-    Transitions bill from 'submitted' -> 'approved'.
-    Looks up the job's customer (client_id) and creates a real
-    sales_invoice via erpclaw-selling cross_skill integration.
-    The invoice is auto-submitted to post GL entries.
+    Transitions bill from 'submitted' -> 'approved' only when its sales
+    invoice exists and is posted. Looks up the job's customer (client_id)
+    and creates a real sales_invoice via erpclaw-selling cross_skill
+    integration, then auto-submits it to post GL entries. A create or submit
+    refusal leaves the bill 'submitted' and names the cause; a draft invoice
+    the selling module already committed is linked so a retry submits it
+    instead of creating a second one.
     """
     pb_id = getattr(args, "progress_bill_id", None)
     if not pb_id:
@@ -461,68 +567,84 @@ def approve_progress_bill(conn, args):
     bill_number = row["bill_number"]
     job_name = job["name"]
 
-    # Build invoice line items — single line for the progress bill
-    # This preserves the AIA G702/G703 structure in constructclaw
-    # while creating a proper sales invoice for GL posting
-    items = [{
-        "description": f"Progress Bill #{bill_number} - {job_name}",
-        "qty": "1",
-        "rate": str(current_due.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)),
-    }]
-
-    # If the bill has detail lines, include them as additional context
     q = Q.from_(_t_pb_line).select(_t_pb_line.star).where(_t_pb_line.bill_id == P()).orderby(_t_pb_line.item_number)
     bill_lines = conn.execute(q.get_sql(), (pb_id,)).fetchall()
 
+    linked_si_id = row["sales_invoice_id"] if "sales_invoice_id" in row.keys() else None
+    linked_status = _invoice_status(conn, linked_si_id) if linked_si_id else None
+
+    if bill_lines and linked_status not in _POSTED_SALES_INVOICE_STATUSES:
+        sum_completed = sum((_d(bl["total_completed"]) for bl in bill_lines), Decimal("0"))
+        sum_retention = sum((_d(bl["retention_amount"]) for bl in bill_lines), Decimal("0"))
+        if sum_completed != _d(row["total_completed"]) or sum_retention != _d(row["total_retention"]):
+            err(f"Progress bill {bill_number} does not foot to its G703 lines; it cannot be invoiced")
+
+    current_due_str = str(current_due.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+    description = f"Progress Bill #{bill_number} - {job_name}"
     if bill_lines:
-        # Replace single-line with detailed SOV lines
-        items = []
-        for bl in bill_lines:
-            this_period = _d(bl["this_period"])
-            if this_period > 0:
-                items.append({
-                    "description": f"[{bl['item_number']}] {bl['description']}",
-                    "qty": "1",
-                    "rate": str(this_period.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)),
-                })
-        # Fallback if all line this_period are zero
-        if not items:
-            items = [{
-                "description": f"Progress Bill #{bill_number} - {job_name}",
-                "qty": "1",
-                "rate": str(current_due.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)),
-            }]
+        description = f"{description} (G703: {len(bill_lines)} lines)"
+    items = [{
+        "description": description,
+        "qty": "1",
+        "rate": current_due_str,
+    }]
 
     # Create and submit the sales invoice via cross_skill
     db_path = getattr(args, "db_path", None)
-    sales_invoice_id = None
 
-    try:
-        inv_result = create_invoice(
-            customer_id=customer_id,
-            items=items,
-            company_id=company_id,
-            remarks=f"ConstructClaw Progress Bill #{bill_number} for job {job_name}",
-            db_path=db_path,
-        )
+    def _refuse_with_draft_link(si_id, cause):
+        sql, params = dynamic_update("constructclaw_progress_bill",
+            {"sales_invoice_id": si_id, "updated_at": now()},
+            {"id": pb_id})
+        conn.execute(sql, params)
+        audit(conn, SKILL, "construction-approve-progress-bill", "constructclaw_progress_bill", pb_id,
+              old_values={"sales_invoice_id": row["sales_invoice_id"]},
+              new_values={"sales_invoice_id": si_id})
+        conn.commit()
+        err(f"Sales invoice {si_id} was created but could not be submitted: {cause}. The progress bill stays submitted and is linked to the draft invoice; approve it again once the cause is fixed.")
+
+    def _submit_or_refuse(si_id):
+        try:
+            submit_invoice(invoice_id=si_id, db_path=db_path)
+        except CrossSkillError as e:
+            if _invoice_status(conn, si_id) in _POSTED_SALES_INVOICE_STATUSES:
+                return si_id
+            _refuse_with_draft_link(si_id, e)
+        return si_id
+
+    def _create_and_submit_invoice():
+        try:
+            inv_result = create_invoice(
+                customer_id=customer_id,
+                items=items,
+                company_id=company_id,
+                db_path=db_path,
+            )
+        except CrossSkillError as e:
+            err(f"Sales invoice could not be created for progress bill {bill_number}: {e}")
         # Extract the invoice ID from the response
         inv_data = inv_result.get("sales_invoice", inv_result)
         sales_invoice_id = inv_data.get("id") or inv_data.get("sales_invoice_id")
+        if not sales_invoice_id:
+            err(f"Sales invoice could not be created for progress bill {bill_number}: the selling module returned no sales_invoice_id")
+        return _submit_or_refuse(sales_invoice_id)
 
-        if sales_invoice_id:
-            # Auto-submit the invoice to post GL entries
-            try:
-                submit_invoice(invoice_id=sales_invoice_id, db_path=db_path)
-            except CrossSkillError:
-                # Invoice created but submit failed — still link it
-                pass
-
-    except CrossSkillError as e:
-        # Invoice creation failed — approve the bill but warn about missing invoice
-        # This allows the billing workflow to continue even without erpclaw-selling installed
-        sales_invoice_id = None
-        import sys as _sys
-        _sys.stderr.write(f"[constructclaw] Warning: Could not create sales invoice: {e}\n")
+    if linked_si_id:
+        if linked_status in _POSTED_SALES_INVOICE_STATUSES:
+            sales_invoice_id = linked_si_id
+        elif linked_status == "draft":
+            t_si = Table("sales_invoice")
+            si_row = conn.execute(Q.from_(t_si).select(t_si.grand_total).where(t_si.id == P()).get_sql(), (linked_si_id,)).fetchone()
+            linked_total = _q2(si_row["grand_total"]) if si_row else _q2("0")
+            if linked_total != current_due_str:
+                err(f"Progress bill {bill_number} is linked to draft sales invoice {linked_si_id} for {linked_total}, not its current due {current_due_str}; delete that draft and approve again")
+            sales_invoice_id = _submit_or_refuse(linked_si_id)
+        elif linked_status is None:
+            sales_invoice_id = _create_and_submit_invoice()
+        else:
+            err(f"Progress bill {bill_number} is linked to sales invoice {linked_si_id} in status '{linked_status}'; it cannot be approved against that invoice.")
+    else:
+        sales_invoice_id = _create_and_submit_invoice()
 
     # Update the progress bill status and link the invoice
     sql, params = dynamic_update("constructclaw_progress_bill",
@@ -535,17 +657,12 @@ def approve_progress_bill(conn, args):
           new_values={"bill_status": "approved", "sales_invoice_id": sales_invoice_id})
     conn.commit()
 
-    result = {
+    ok({
         "progress_bill_id": pb_id,
         "bill_status": "approved",
         "current_due": str(current_due.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)),
-    }
-    if sales_invoice_id:
-        result["sales_invoice_id"] = sales_invoice_id
-    else:
-        result["warning"] = "Sales invoice could not be created. erpclaw-selling may not be installed."
-
-    ok(result)
+        "sales_invoice_id": sales_invoice_id,
+    })
 
 
 # ---------------------------------------------------------------------------
@@ -680,6 +797,10 @@ def billing_summary(conn, args):
          .orderby(_t_pb.bill_number))
     bills = conn.execute(q.get_sql(), (job_id, "rejected")).fetchall()
 
+    _t_pa = Table("payment_allocation")
+    _t_pe = Table("payment_entry")
+    _t_si = Table("sales_invoice")
+
     total_billed = Decimal("0")
     total_retention = Decimal("0")
     total_paid = Decimal("0")
@@ -690,8 +811,27 @@ def billing_summary(conn, args):
         ret = _d(b["total_retention"])
         total_billed += due
         total_retention = ret  # latest retention total
-        if b["bill_status"] == "paid":
-            total_paid += due
+        # Include linked sales invoice if present
+        invoice_id = b["sales_invoice_id"] if "sales_invoice_id" in b.keys() else None
+        amount_paid = Decimal("0")
+        invoice_status = None
+        if invoice_id:
+            inv = conn.execute(
+                Q.from_(_t_si).select(_t_si.status).where(_t_si.id == P()).get_sql(),
+                (invoice_id,)).fetchone()
+            if inv is not None:
+                invoice_status = inv["status"]
+            aq = (Q.from_(_t_pa).join(_t_pe).on(_t_pa.payment_entry_id == _t_pe.id)
+                  .select(_t_pa.allocated_amount)
+                  .where(_t_pa.voucher_type == P())
+                  .where(_t_pa.voucher_id == P())
+                  .where(_t_pa.delinked == P())
+                  .where(_t_pe.status == P()))
+            for ar in conn.execute(
+                    aq.get_sql(),
+                    ("sales_invoice", invoice_id, 0, "submitted")).fetchall():
+                amount_paid += _d(ar["allocated_amount"])
+            total_paid += amount_paid
         entry = {
             "bill_number": b["bill_number"],
             "bill_status": b["bill_status"],
@@ -699,10 +839,10 @@ def billing_summary(conn, args):
             "period_from": b["period_from"],
             "period_to": b["period_to"],
         }
-        # Include linked sales invoice if present
-        invoice_id = b["sales_invoice_id"] if "sales_invoice_id" in b.keys() else None
         if invoice_id:
             entry["sales_invoice_id"] = invoice_id
+            entry["amount_paid"] = str(amount_paid.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+            entry["invoice_status"] = invoice_status
         bill_history.append(entry)
 
     contract = _d(job["contract_amount"])
@@ -730,6 +870,7 @@ ACTIONS = {
     "construction-list-schedules-of-values": list_schedules_of_values,
     "construction-add-sov-line": add_sov_line,
     "construction-list-sov-lines": list_sov_lines,
+    "construction-record-sov-progress": record_sov_progress,
     "construction-add-progress-bill": add_progress_bill,
     "construction-get-progress-bill": get_progress_bill,
     "construction-list-progress-bills": list_progress_bills,

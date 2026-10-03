@@ -300,18 +300,24 @@ def batch_add_cost_codes(conn, args):
     if not isinstance(codes_list, list) or len(codes_list) == 0:
         err("--codes-json must be a non-empty JSON array")
 
+    # A refusal part-way through the batch rolls back the rows this batch
+    # already inserted, so the batch is all-or-nothing for an in-process
+    # caller too, not only when the process exits.
     created = []
     for idx, item in enumerate(codes_list):
         code = item.get("code")
         if not code:
+            conn.rollback()
             err(f"Cost code at index {idx} missing 'code' field")
 
         q = Q.from_(_t_cc).select(_t_cc.id).where(_t_cc.job_id == P()).where(_t_cc.code == P())
         if conn.execute(q.get_sql(), (job_id, code)).fetchone():
+            conn.rollback()
             err(f"Cost code {code} already exists for this job")
 
         category = item.get("category", "labor")
         if category not in VALID_COST_CATEGORIES:
+            conn.rollback()
             err(f"Invalid category '{category}' for cost code {code}")
 
         cc_id = str(uuid.uuid4())

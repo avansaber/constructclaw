@@ -2,7 +2,7 @@
 
 All notable changes to the ConstructClaw vertical skill.
 
-## [1.1.0] — 2026-07-05 — M33 Item 3 (B9) — G703 continuation-sheet line derivation
+## [1.1.0] — 2026-07-05 — G703 continuation-sheet line derivation
 
 ### Added
 - **`construction-add-progress-bill` now derives AIA G703 continuation-sheet

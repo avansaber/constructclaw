@@ -334,3 +334,147 @@ class TestG703BackwardCompatibility:
             (r["progress_bill_id"],),
         ).fetchone()
         assert cnt["c"] == 0
+
+
+# ── Cross-skill sales-invoice bridge: REAL selling function in-process ──────
+
+def _delegate_selling_in_process(conn, monkeypatch):
+    """Redirect cross_skill.call_skill_action to the REAL foundation functions.
+
+    call_skill_action shells out to the INSTALLED skill tree, which is neither
+    this worktree's code nor this test's database. Running the genuine
+    inventory/selling functions in-process instead keeps every assertion real
+    (item resolution, totals, GL postings) while still recording exactly which
+    action and flags the vertical sent through the shared library.
+    """
+    import argparse
+    import importlib.util
+    import io
+    import json as _json
+    import os as _os
+    import sys as _sys
+    from unittest.mock import patch as _patch
+    from construct_helpers import SRC_DIR as _SRC
+
+    def _load(domain):
+        path = _os.path.join(_SRC, "erpclaw", "scripts", domain, "db_query.py")
+        spec = importlib.util.spec_from_file_location(f"_fnd_{domain}", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    selling = _load("erpclaw-selling")
+    inventory = _load("erpclaw-inventory")
+    from erpclaw_lib import cross_skill as _cs
+    captured = {}
+
+    def _run(fn, args_ns):
+        buf = io.StringIO()
+
+        def _fake_exit(code=0):
+            raise SystemExit(code)
+
+        try:
+            with _patch("sys.stdout", buf), _patch("sys.exit", side_effect=_fake_exit):
+                fn(conn, args_ns)
+        except SystemExit:
+            pass
+        return _json.loads(buf.getvalue().strip())
+
+    def _in_process(skill_name, action, args=None, db_path=None, timeout=30):
+        flags = dict(args or {})
+        captured.setdefault("calls", []).append(
+            {"skill": skill_name, "action": action, "args": flags})
+        if action == "add-item":
+            result = _run(inventory.add_item, argparse.Namespace(
+                item_code=flags.get("--item-code"),
+                item_name=flags.get("--item-name"),
+                item_type=flags.get("--item-type"),
+                valuation_method=None, item_group=None, stock_uom=None,
+                has_batch=None, has_serial=None, standard_rate=None,
+                custom_fields=None))
+        elif action == "list-items":
+            result = _run(inventory.list_items, argparse.Namespace(
+                item_group=None, item_type=None, search=flags.get("--search"),
+                limit="20", offset="0", warehouse_id=None, company_id=None))
+        elif action == "create-sales-invoice":
+            result = _run(selling.create_sales_invoice, argparse.Namespace(
+                company_id=flags.get("--company-id"),
+                customer_id=flags.get("--customer-id"),
+                tax_template_id=None, sales_order_id=None,
+                delivery_note_id=None,
+                posting_date=flags.get("--posting-date"),
+                due_date=flags.get("--due-date"),
+                items=flags.get("--items"), payment_terms_id=None))
+        elif action == "submit-sales-invoice":
+            result = _run(selling.submit_sales_invoice, argparse.Namespace(
+                sales_invoice_id=flags.get("--sales-invoice-id")))
+        else:
+            raise AssertionError(f"unexpected cross-skill action {action}")
+        if result.get("status") == "error":
+            raise _cs.CrossSkillError(
+                result.get("message", f"{action} failed"))
+        return result
+
+    monkeypatch.setattr(_cs, "call_skill_action", _in_process)
+    return captured
+
+
+def _seed_submit_prereqs(conn, company_id):
+    """Seed the GL accounts, fiscal year and cost center submit needs."""
+    recv_id = str(uuid.uuid4())
+    conn.execute(
+        "INSERT INTO account (id, name, account_number, root_type, "
+        " account_type, balance_direction, company_id, depth)"
+        " VALUES (?, ?, ?, 'asset', 'receivable', 'debit_normal', ?, 0)",
+        (recv_id, f"Debtors {recv_id[:6]}", f"1200-{recv_id[:6]}", company_id))
+    inc_id = str(uuid.uuid4())
+    conn.execute(
+        "INSERT INTO account (id, name, account_number, root_type, "
+        " account_type, balance_direction, company_id, depth)"
+        " VALUES (?, ?, ?, 'income', 'revenue', 'credit_normal', ?, 0)",
+        (inc_id, f"Sales {inc_id[:6]}", f"4100-{inc_id[:6]}", company_id))
+    fy_id = str(uuid.uuid4())
+    conn.execute(
+        "INSERT INTO fiscal_year (id, name, start_date, end_date, company_id)"
+        " VALUES (?, ?, '2026-01-01', '2026-12-31', ?)",
+        (fy_id, f"FY-{fy_id[:6]}", company_id))
+    cc_id = str(uuid.uuid4())
+    conn.execute(
+        "INSERT INTO cost_center (id, name, company_id, is_group)"
+        " VALUES (?, ?, ?, 0)",
+        (cc_id, f"Main {cc_id[:6]}", company_id))
+    conn.commit()
+
+
+class TestApproveProgressBillSellingBridge:
+    def test_approve_progress_bill_links_sales_invoice(
+            self, conn, env, mod, monkeypatch):
+        _seed_submit_prereqs(conn, env["company_id"])
+        _delegate_selling_in_process(conn, monkeypatch)
+        job_id = _add_job(conn, env, mod)
+        add_r = call_action(mod.ACTIONS["construction-add-progress-bill"], conn, ns(
+            company_id=env["company_id"], job_id=job_id, sov_id=None,
+            total_completed="10000.00", total_retention="1000.00",
+            period_from="2026-03-01", period_to="2026-03-31", notes=None,
+        ))
+        assert is_ok(add_r), add_r
+        pb_id = add_r["progress_bill_id"]
+        sub_r = call_action(
+            mod.ACTIONS["construction-submit-progress-bill"], conn,
+            ns(progress_bill_id=pb_id))
+        assert is_ok(sub_r), sub_r
+        r = call_action(
+            mod.ACTIONS["construction-approve-progress-bill"], conn,
+            ns(progress_bill_id=pb_id, db_path=None))
+        assert is_ok(r), r
+        assert r.get("sales_invoice_id"), r
+        bill = conn.execute(
+            "SELECT sales_invoice_id FROM constructclaw_progress_bill WHERE id = ?",
+            (pb_id,)).fetchone()
+        assert bill["sales_invoice_id"] == r["sales_invoice_id"]
+        si = conn.execute(
+            "SELECT grand_total, status FROM sales_invoice WHERE id = ?",
+            (r["sales_invoice_id"],)).fetchone()
+        assert si["grand_total"] == "9000.00"
+        assert si["status"] == "submitted"

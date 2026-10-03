@@ -324,6 +324,7 @@ SUBCONTRACT = Table(
            ForeignKey("company.id", ondelete="RESTRICT"), nullable=False),
     Column("created_at", Text, server_default=text("CURRENT_TIMESTAMP")),
     Column("updated_at", Text, server_default=text("CURRENT_TIMESTAMP")),
+    Column("supplier_id", Text),
     CheckConstraint(
         "subcontract_status IN ('draft','pending_approval','approved','active',"
         "'on_hold','complete','terminated','cancelled')",
@@ -384,6 +385,7 @@ PAY_APPLICATION = Table(
            ForeignKey("company.id", ondelete="RESTRICT"), nullable=False),
     Column("created_at", Text, server_default=text("CURRENT_TIMESTAMP")),
     Column("updated_at", Text, server_default=text("CURRENT_TIMESTAMP")),
+    Column("purchase_invoice_id", Text),
     CheckConstraint(
         "pay_app_status IN ('draft','submitted','approved','rejected','paid')",
         name="ck_constructclaw_pay_application_pay_app_status"),

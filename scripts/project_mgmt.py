@@ -26,6 +26,7 @@ from erpclaw_lib.response import ok, err, row_to_dict
 from erpclaw_lib.audit import audit
 from erpclaw_lib.query import (
     Q, P, Table, Field, fn, Order, insert_row, LiteralValue, dynamic_update,
+    date_add_days,
 )
 
 SKILL = "constructclaw"
@@ -675,17 +676,19 @@ def check_expiring_insurance(conn, args):
     if not getattr(args, "company_id", None):
         err("--company-id is required")
 
-    # Find all active bonds expiring within 30 days
+    # Find all active bonds expiring within 30 days of the same `today` that
+    # splits expired from expiring below; the window end is rendered per dialect.
+    today = _date.today().isoformat()
+    horizon = str(date_add_days("?", "30", "+"))
     rows = conn.execute(
-        """SELECT * FROM constructclaw_insurance_bond
+        f"""SELECT * FROM constructclaw_insurance_bond
            WHERE company_id = ? AND status = 'active'
            AND expiration_date IS NOT NULL
-           AND expiration_date <= date('now', '+30 days')
+           AND expiration_date <= {horizon}
            ORDER BY expiration_date ASC""",
-        (args.company_id,),
+        (args.company_id, today),
     ).fetchall()
 
-    today = _date.today().isoformat()
     expired = []
     expiring = []
     for r in rows:
@@ -886,15 +889,16 @@ def check_expiring_warranties(conn, args):
     if not getattr(args, "company_id", None):
         err("--company-id is required")
 
+    today = _date.today().isoformat()
+    horizon = str(date_add_days("?", "60", "+"))
     rows = conn.execute(
-        """SELECT * FROM constructclaw_warranty
+        f"""SELECT * FROM constructclaw_warranty
            WHERE company_id = ? AND status = 'active'
-           AND end_date <= date('now', '+60 days')
+           AND end_date <= {horizon}
            ORDER BY end_date ASC""",
-        (args.company_id,),
+        (args.company_id, today),
     ).fetchall()
 
-    today = _date.today().isoformat()
     expired = []
     expiring = []
     for r in rows:
