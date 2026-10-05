@@ -190,7 +190,7 @@ python3 {baseDir}/scripts/db_query.py --action status
 | `construction-add-earned-value` | Record earned value data |
 | `construction-list-earned-values` | List earned value entries |
 | `construction-calculate-ev-metrics` | Calculate CPI/SPI/EAC/ETC |
-| `construction-wip-report` | Work-in-progress report |
+| `construction-wip-report` | Cost-to-cost work-in-progress report (estimate = active cost-code budgets) |
 | `construction-wip-report-all` | WIP report all jobs |
 | `construction-cost-forecast` | Cost forecast with EAC |
 | `construction-job-status-report` | Job status report |

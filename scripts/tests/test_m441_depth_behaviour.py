@@ -191,6 +191,15 @@ def _set_percent(conn, mod, job_id, percent):
     assert is_ok(r), r
 
 
+def _add_cost_code(conn, mod, company_id, job_id, code, budget):
+    r = call_action(mod.ACTIONS["construction-add-cost-code"], conn, ns(
+        company_id=company_id, job_id=job_id,
+        code=code, description="depth budget", category="labor",
+        budget_amount=budget, budget_hours=None))
+    assert is_ok(r), r
+    return r["cost_code_id"]
+
+
 def _add_cost(conn, mod, company_id, job_id, amount, category="labor"):
     r = call_action(mod.ACTIONS["construction-add-cost-entry"], conn, ns(
         company_id=company_id, job_id=job_id, cost_code_id=None,
@@ -737,6 +746,8 @@ class TestWipReportDepth:
         cid = denv["company_id"]
         job_id = _add_job(dconn, mod, cid)
         _set_percent(dconn, mod, job_id, "25")
+        _add_cost_code(dconn, mod, cid, job_id, "01-100", "200000")
+        _add_cost_code(dconn, mod, cid, job_id, "02-200", "400000")
         _add_cost(dconn, mod, cid, job_id, "100000")
         _add_cost(dconn, mod, cid, job_id, "50000", category="material")
         bill_id = _add_bill(dconn, mod, cid, job_id, "200000", "20000")
@@ -763,7 +774,8 @@ class TestWipReportDepth:
             job_id=job_id))
         assert is_ok(r), r
         assert r["contract_amount"] == "1000000.00"
-        assert r["percent_complete"] == "25"
+        assert r["estimated_total_cost"] == "600000.00"
+        assert r["percent_complete"] == "25.00"
         assert r["earned_revenue"] == "250000.00"
         assert r["total_cost"] == "150000.00"
         assert r["total_billed"] == "180000.00"

@@ -609,3 +609,137 @@ class TestBids:
         assert r["highest_bid"] == "150000.00"
         # First bid should have 0 spread
         assert r["bids"][0]["spread_from_low"] == "0.00"
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# WIP REPORT (cost-to-cost)
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestWipReport:
+    def _add_job(self, conn, env, mod, contract_amount="500.00"):
+        r = call_action(mod.ACTIONS["construction-add-job"], conn, ns(
+            company_id=env["company_id"], name="WIP Job",
+            job_type=None, contract_type=None, contract_amount=contract_amount,
+            client_name=None, client_id=None, description=None,
+            project_manager=None, superintendent=None,
+            start_date=None, end_date=None, address=None,
+            city=None, state=None, zip_code=None, notes=None,
+        ))
+        assert is_ok(r), r
+        return r["job_id"]
+
+    def _add_code(self, conn, env, mod, job_id, code, budget):
+        r = call_action(mod.ACTIONS["construction-add-cost-code"], conn, ns(
+            company_id=env["company_id"], job_id=job_id,
+            code=code, description=None,
+            category="labor", budget_amount=budget, budget_hours=None,
+        ))
+        assert is_ok(r), r
+
+    def _add_cost(self, conn, env, mod, job_id, amount):
+        r = call_action(mod.ACTIONS["construction-add-cost-entry"], conn, ns(
+            company_id=env["company_id"], job_id=job_id,
+            cost_code_id=None, entry_date="2026-03-01",
+            category="labor", description=None,
+            vendor=None, reference=None,
+            quantity=None, unit_cost=None, amount=amount,
+            hours=None,
+        ))
+        assert is_ok(r), r
+
+    def _add_bill(self, conn, env, mod, job_id, total_completed):
+        r = call_action(mod.ACTIONS["construction-add-progress-bill"], conn, ns(
+            company_id=env["company_id"], job_id=job_id, sov_id=None,
+            total_completed=total_completed, total_retention="0",
+            period_from="2026-03-01", period_to="2026-03-31", notes=None,
+        ))
+        assert is_ok(r), r
+
+    def _store_percent(self, conn, mod, job_id, pct):
+        r = call_action(mod.ACTIONS["construction-update-job"], conn, ns(
+            job_id=job_id, name=None, description=None,
+            client_name=None, client_id=None,
+            project_manager=None, superintendent=None,
+            contract_amount=None, start_date=None, end_date=None,
+            actual_start_date=None, actual_end_date=None,
+            address=None, city=None, state=None, zip_code=None,
+            percent_complete=pct, notes=None,
+            job_type=None, contract_type=None, job_status=None,
+        ))
+        assert is_ok(r), r
+
+    def test_wip_underbilled_cost_to_cost(self, conn, env, mod):
+        job_id = self._add_job(conn, env, mod)
+        self._add_code(conn, env, mod, job_id, "01-100", "33.33")
+        self._add_code(conn, env, mod, job_id, "02-200", "66.67")
+        self._add_cost(conn, env, mod, job_id, "12.34")
+        self._add_cost(conn, env, mod, job_id, "12.66")
+        self._add_bill(conn, env, mod, job_id, "40.33")
+        self._add_bill(conn, env, mod, job_id, "100.00")
+        self._store_percent(conn, mod, job_id, "90")
+
+        r = call_action(mod.ACTIONS["construction-wip-report"], conn, ns(
+            job_id=job_id,
+        ))
+        assert is_ok(r), r
+        assert r["contract_amount"] == "500.00"
+        assert r["estimated_total_cost"] == "100.00"
+        assert r["total_cost"] == "25.00"
+        assert r["total_billed"] == "100.00"
+        assert r["percent_complete"] == "25.00"
+        assert r["earned_revenue"] == "125.00"
+        assert r["costs_in_excess_of_billings"] == "25.00"
+        assert r["billings_in_excess_of_costs"] == "0.00"
+        assert r["over_under_billing"] == "-25.00"
+        assert r["billing_status"] == "underbilled"
+
+    def test_wip_overbilled_cost_to_cost(self, conn, env, mod):
+        job_id = self._add_job(conn, env, mod)
+        self._add_code(conn, env, mod, job_id, "01-100", "33.33")
+        self._add_code(conn, env, mod, job_id, "02-200", "66.67")
+        self._add_cost(conn, env, mod, job_id, "10.10")
+        self._add_cost(conn, env, mod, job_id, "14.90")
+        self._add_bill(conn, env, mod, job_id, "100.10")
+        self._add_bill(conn, env, mod, job_id, "150.00")
+        self._store_percent(conn, mod, job_id, "5")
+
+        r = call_action(mod.ACTIONS["construction-wip-report"], conn, ns(
+            job_id=job_id,
+        ))
+        assert is_ok(r), r
+        assert r["contract_amount"] == "500.00"
+        assert r["estimated_total_cost"] == "100.00"
+        assert r["total_cost"] == "25.00"
+        assert r["total_billed"] == "150.00"
+        assert r["percent_complete"] == "25.00"
+        assert r["earned_revenue"] == "125.00"
+        assert r["costs_in_excess_of_billings"] == "0.00"
+        assert r["billings_in_excess_of_costs"] == "25.00"
+        assert r["over_under_billing"] == "25.00"
+        assert r["billing_status"] == "overbilled"
+
+    def test_wip_zero_budget_refuses_without_writes(self, conn, env, mod):
+        job_id = self._add_job(conn, env, mod)
+        self._add_cost(conn, env, mod, job_id, "12.34")
+        self._add_bill(conn, env, mod, job_id, "10.10")
+
+        def _count(table):
+            return conn.execute(f"SELECT COUNT(*) AS c FROM {table}").fetchone()["c"]
+
+        before = (
+            _count("constructclaw_job"),
+            _count("constructclaw_cost_entry"),
+            _count("constructclaw_progress_bill"),
+            _count("audit_log"),
+        )
+        r = call_action(mod.ACTIONS["construction-wip-report"], conn, ns(
+            job_id=job_id,
+        ))
+        assert is_error(r)
+        after = (
+            _count("constructclaw_job"),
+            _count("constructclaw_cost_entry"),
+            _count("constructclaw_progress_bill"),
+            _count("audit_log"),
+        )
+        assert after == before

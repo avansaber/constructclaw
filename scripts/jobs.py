@@ -708,38 +708,52 @@ def wip_report(conn, args):
         err(f"Job {job_id} not found")
 
     contract = _d(job["contract_amount"])
-    pct_complete = _d(job["percent_complete"])
 
-    # PyPika: skipped — CAST inside COALESCE/SUM aggregate
-    # Total cost
-    cost_row = conn.execute(
-        "SELECT COALESCE(SUM(CAST(amount AS NUMERIC)), 0) as total FROM constructclaw_cost_entry WHERE job_id = ?",
-        (job_id,),
-    ).fetchone()
-    total_cost = _d(cost_row["total"])
+    q_budget = Q.from_(_t_cc).select(_t_cc.budget_amount).where(_t_cc.job_id == P()).where(_t_cc.is_active == P())
+    budget_rows = conn.execute(q_budget.get_sql(), (job_id, 1)).fetchall()
+    estimated_total_cost = sum((_d(r["budget_amount"]) for r in budget_rows), Decimal("0"))
 
-    # Total billed
-    billed_row = conn.execute(
-        "SELECT COALESCE(SUM(CAST(current_due AS NUMERIC)), 0) as total FROM constructclaw_progress_bill WHERE job_id = ? AND bill_status != 'rejected'",
-        (job_id,),
-    ).fetchone()
-    total_billed = _d(billed_row["total"])
+    if estimated_total_cost <= 0:
+        err(f"Cannot derive percent complete for job {job_id}: estimated total cost from active cost-code budgets is {estimated_total_cost}, must be greater than zero")
 
-    # Earned revenue = contract * pct_complete / 100
+    q_cost = Q.from_(_t_ce).select(_t_ce.amount).where(_t_ce.job_id == P())
+    cost_rows = conn.execute(q_cost.get_sql(), (job_id,)).fetchall()
+    total_cost = sum((_d(r["amount"]) for r in cost_rows), Decimal("0"))
+
+    q_bill = Q.from_(_t_pb).select(_t_pb.current_due).where(_t_pb.job_id == P()).where(_t_pb.bill_status != P())
+    bill_rows = conn.execute(q_bill.get_sql(), (job_id, "rejected")).fetchall()
+    total_billed = sum((_d(r["current_due"]) for r in bill_rows), Decimal("0"))
+
+    pct_complete = (total_cost / estimated_total_cost * Decimal("100")).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
     earned_revenue = (contract * pct_complete / Decimal("100")).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
-    # Over/under billing
-    over_under = total_billed - earned_revenue
+    if earned_revenue > total_billed:
+        costs_in_excess = (earned_revenue - total_billed).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        billings_in_excess = Decimal("0.00")
+    elif total_billed > earned_revenue:
+        costs_in_excess = Decimal("0.00")
+        billings_in_excess = (total_billed - earned_revenue).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    else:
+        costs_in_excess = Decimal("0.00")
+        billings_in_excess = Decimal("0.00")
+
+    over_under = (total_billed - earned_revenue).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
     ok({
         "job_id": job_id,
         "job_name": job["name"],
         "contract_amount": str(contract.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)),
+        "estimated_total_cost": str(estimated_total_cost.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)),
         "percent_complete": str(pct_complete),
         "earned_revenue": str(earned_revenue),
         "total_cost": str(total_cost.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)),
         "total_billed": str(total_billed.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)),
-        "over_under_billing": str(over_under.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)),
+        "costs_in_excess_of_billings": str(costs_in_excess),
+        "billings_in_excess_of_costs": str(billings_in_excess),
+        "costs_in_excess": str(costs_in_excess),
+        "billings_in_excess": str(billings_in_excess),
+        "over_under_billing": str(over_under),
         "billing_status": "overbilled" if over_under > 0 else ("underbilled" if over_under < 0 else "balanced"),
     })
 
