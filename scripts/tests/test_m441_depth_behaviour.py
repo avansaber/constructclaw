@@ -751,6 +751,10 @@ class TestWipReportDepth:
         _add_cost(dconn, mod, cid, job_id, "100000")
         _add_cost(dconn, mod, cid, job_id, "50000", category="material")
         bill_id = _add_bill(dconn, mod, cid, job_id, "200000", "20000")
+        assert is_ok(call_action(
+            mod.ACTIONS["construction-submit-progress-bill"], dconn,
+            ns(progress_bill_id=bill_id),
+        ))
         other_job = _add_job(dconn, mod, cid, name="Other Job",
                              amount="500000")
         other_bill = _add_bill(dconn, mod, cid, other_job, "50000", "5000")

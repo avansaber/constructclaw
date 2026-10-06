@@ -616,6 +616,24 @@ class TestBids:
 # ═══════════════════════════════════════════════════════════════════════════
 
 class TestWipReport:
+    @staticmethod
+    def _state(conn):
+        tables = (
+            "constructclaw_job",
+            "constructclaw_cost_code",
+            "constructclaw_cost_entry",
+            "constructclaw_cco",
+            "constructclaw_progress_bill",
+            "audit_log",
+        )
+        return {
+            table: sorted(
+                repr(dict(row))
+                for row in conn.execute(f"SELECT * FROM {table}").fetchall()
+            )
+            for table in tables
+        }
+
     def _add_job(self, conn, env, mod, contract_amount="500.00"):
         r = call_action(mod.ACTIONS["construction-add-job"], conn, ns(
             company_id=env["company_id"], name="WIP Job",
@@ -654,6 +672,23 @@ class TestWipReport:
             period_from="2026-03-01", period_to="2026-03-31", notes=None,
         ))
         assert is_ok(r), r
+        return r["progress_bill_id"]
+
+    def _submit_bill(self, conn, mod, progress_bill_id):
+        r = call_action(
+            mod.ACTIONS["construction-submit-progress-bill"], conn,
+            ns(progress_bill_id=progress_bill_id),
+        )
+        assert is_ok(r), r
+
+    def _add_cco(self, conn, env, mod, job_id, title, cost_change):
+        r = call_action(mod.ACTIONS["construction-add-cco"], conn, ns(
+            company_id=env["company_id"], job_id=job_id, pco_id=None,
+            title=title, description=None, cost_change=cost_change,
+            time_change_days=None, notes=None,
+        ))
+        assert is_ok(r), r
+        return r["cco_id"]
 
     def _store_percent(self, conn, mod, job_id, pct):
         r = call_action(mod.ACTIONS["construction-update-job"], conn, ns(
@@ -674,8 +709,10 @@ class TestWipReport:
         self._add_code(conn, env, mod, job_id, "02-200", "66.67")
         self._add_cost(conn, env, mod, job_id, "12.34")
         self._add_cost(conn, env, mod, job_id, "12.66")
-        self._add_bill(conn, env, mod, job_id, "40.33")
-        self._add_bill(conn, env, mod, job_id, "100.00")
+        first_bill = self._add_bill(conn, env, mod, job_id, "40.33")
+        second_bill = self._add_bill(conn, env, mod, job_id, "100.00")
+        self._submit_bill(conn, mod, first_bill)
+        self._submit_bill(conn, mod, second_bill)
         self._store_percent(conn, mod, job_id, "90")
 
         r = call_action(mod.ACTIONS["construction-wip-report"], conn, ns(
@@ -699,8 +736,10 @@ class TestWipReport:
         self._add_code(conn, env, mod, job_id, "02-200", "66.67")
         self._add_cost(conn, env, mod, job_id, "10.10")
         self._add_cost(conn, env, mod, job_id, "14.90")
-        self._add_bill(conn, env, mod, job_id, "100.10")
-        self._add_bill(conn, env, mod, job_id, "150.00")
+        first_bill = self._add_bill(conn, env, mod, job_id, "100.10")
+        second_bill = self._add_bill(conn, env, mod, job_id, "150.00")
+        self._submit_bill(conn, mod, first_bill)
+        self._submit_bill(conn, mod, second_bill)
         self._store_percent(conn, mod, job_id, "5")
 
         r = call_action(mod.ACTIONS["construction-wip-report"], conn, ns(
@@ -718,28 +757,116 @@ class TestWipReport:
         assert r["over_under_billing"] == "25.00"
         assert r["billing_status"] == "overbilled"
 
+    def test_wip_uses_full_precision_ratio_before_money_rounding(
+            self, conn, env, mod):
+        job_id = self._add_job(
+            conn, env, mod, contract_amount="1000000.00")
+        self._add_code(conn, env, mod, job_id, "01-100", "3.00")
+        self._add_cost(conn, env, mod, job_id, "1.00")
+
+        result = call_action(
+            mod.ACTIONS["construction-wip-report"], conn,
+            ns(job_id=job_id),
+        )
+        assert is_ok(result), result
+        assert result["contract_amount"] == "1000000.00"
+        assert result["change_orders"] == "0.00"
+        assert result["revised_contract"] == "1000000.00"
+        assert result["estimated_total_cost"] == "3.00"
+        assert result["total_cost"] == "1.00"
+        assert result["percent_complete"] == "33.33"
+        assert result["earned_revenue"] == "333333.33"
+        assert result["costs_in_excess_of_billings"] == "333333.33"
+
+    def test_wip_caps_completion_and_revenue_at_revised_contract(
+            self, conn, env, mod):
+        job_id = self._add_job(conn, env, mod, contract_amount="500.00")
+        self._add_code(conn, env, mod, job_id, "01-100", "100.00")
+        self._add_cost(conn, env, mod, job_id, "125.00")
+
+        result = call_action(
+            mod.ACTIONS["construction-wip-report"], conn,
+            ns(job_id=job_id),
+        )
+        assert is_ok(result), result
+        assert result["percent_complete"] == "100.00"
+        assert result["revised_contract"] == "500.00"
+        assert result["earned_revenue"] == "500.00"
+        assert result["costs_in_excess_of_billings"] == "500.00"
+
+    def test_wip_uses_approved_and_executed_change_orders_only(
+            self, conn, env, mod):
+        job_id = self._add_job(conn, env, mod, contract_amount="500.00")
+        self._add_code(conn, env, mod, job_id, "01-100", "100.00")
+        self._add_cost(conn, env, mod, job_id, "50.00")
+
+        approved = self._add_cco(
+            conn, env, mod, job_id, "Approved scope", "100.00")
+        approved_result = call_action(
+            mod.ACTIONS["construction-approve-cco"], conn,
+            ns(cco_id=approved, approved_by="Owner"),
+        )
+        assert is_ok(approved_result), approved_result
+        executed = self._add_cco(
+            conn, env, mod, job_id, "Executed scope", "50.00")
+        conn.execute(
+            "UPDATE constructclaw_cco SET cco_status = ? WHERE id = ?",
+            ("executed", executed),
+        )
+        self._add_cco(
+            conn, env, mod, job_id, "Draft scope", "999.00")
+        conn.commit()
+
+        result = call_action(
+            mod.ACTIONS["construction-wip-report"], conn,
+            ns(job_id=job_id),
+        )
+        assert is_ok(result), result
+        assert result["contract_amount"] == "500.00"
+        assert result["change_orders"] == "150.00"
+        assert result["revised_contract"] == "650.00"
+        assert result["percent_complete"] == "50.00"
+        assert result["earned_revenue"] == "325.00"
+
+    def test_wip_counts_submitted_bills_not_draft_or_rejected(
+            self, conn, env, mod):
+        job_id = self._add_job(conn, env, mod, contract_amount="500.00")
+        self._add_code(conn, env, mod, job_id, "01-100", "100.00")
+        self._add_cost(conn, env, mod, job_id, "50.00")
+        submitted = self._add_bill(
+            conn, env, mod, job_id, "40.00")
+        self._submit_bill(conn, mod, submitted)
+        draft = self._add_bill(conn, env, mod, job_id, "100.00")
+        rejected = self._add_bill(conn, env, mod, job_id, "150.00")
+        conn.execute(
+            "UPDATE constructclaw_progress_bill SET bill_status = ? "
+            "WHERE id = ?",
+            ("rejected", rejected),
+        )
+        conn.commit()
+        before = self._state(conn)
+
+        result = call_action(
+            mod.ACTIONS["construction-wip-report"], conn,
+            ns(job_id=job_id),
+        )
+        assert is_ok(result), result
+        assert draft
+        assert result["earned_revenue"] == "250.00"
+        assert result["total_billed"] == "40.00"
+        assert result["costs_in_excess_of_billings"] == "210.00"
+        assert result["billings_in_excess_of_costs"] == "0.00"
+        assert result["over_under_billing"] == "-210.00"
+        assert result["billing_status"] == "underbilled"
+        assert self._state(conn) == before
+
     def test_wip_zero_budget_refuses_without_writes(self, conn, env, mod):
         job_id = self._add_job(conn, env, mod)
         self._add_cost(conn, env, mod, job_id, "12.34")
         self._add_bill(conn, env, mod, job_id, "10.10")
-
-        def _count(table):
-            return conn.execute(f"SELECT COUNT(*) AS c FROM {table}").fetchone()["c"]
-
-        before = (
-            _count("constructclaw_job"),
-            _count("constructclaw_cost_entry"),
-            _count("constructclaw_progress_bill"),
-            _count("audit_log"),
-        )
+        before = self._state(conn)
         r = call_action(mod.ACTIONS["construction-wip-report"], conn, ns(
             job_id=job_id,
         ))
         assert is_error(r)
-        after = (
-            _count("constructclaw_job"),
-            _count("constructclaw_cost_entry"),
-            _count("constructclaw_progress_bill"),
-            _count("audit_log"),
-        )
-        assert after == before
+        assert self._state(conn) == before

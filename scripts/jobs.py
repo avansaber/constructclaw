@@ -720,13 +720,41 @@ def wip_report(conn, args):
     cost_rows = conn.execute(q_cost.get_sql(), (job_id,)).fetchall()
     total_cost = sum((_d(r["amount"]) for r in cost_rows), Decimal("0"))
 
-    q_bill = Q.from_(_t_pb).select(_t_pb.current_due).where(_t_pb.job_id == P()).where(_t_pb.bill_status != P())
-    bill_rows = conn.execute(q_bill.get_sql(), (job_id, "rejected")).fetchall()
+    q_change_order = (
+        Q.from_(_t_cco)
+        .select(_t_cco.cost_change)
+        .where(_t_cco.job_id == P())
+        .where(_t_cco.cco_status.isin([P(), P()]))
+    )
+    change_order_rows = conn.execute(
+        q_change_order.get_sql(), (job_id, "approved", "executed")
+    ).fetchall()
+    change_orders = sum(
+        (_d(row["cost_change"]) for row in change_order_rows),
+        Decimal("0"),
+    )
+    revised_contract = contract + change_orders
+
+    q_bill = (
+        Q.from_(_t_pb)
+        .select(_t_pb.current_due)
+        .where(_t_pb.job_id == P())
+        .where(_t_pb.bill_status.isin([P(), P()]))
+    )
+    bill_rows = conn.execute(
+        q_bill.get_sql(), (job_id, "submitted", "approved")
+    ).fetchall()
     total_billed = sum((_d(r["current_due"]) for r in bill_rows), Decimal("0"))
 
-    pct_complete = (total_cost / estimated_total_cost * Decimal("100")).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-
-    earned_revenue = (contract * pct_complete / Decimal("100")).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    completion_ratio = total_cost / estimated_total_cost
+    if completion_ratio > Decimal("1"):
+        completion_ratio = Decimal("1")
+    pct_complete = (
+        completion_ratio * Decimal("100")
+    ).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    earned_revenue = (
+        revised_contract * completion_ratio
+    ).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
     if earned_revenue > total_billed:
         costs_in_excess = (earned_revenue - total_billed).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
@@ -744,6 +772,10 @@ def wip_report(conn, args):
         "job_id": job_id,
         "job_name": job["name"],
         "contract_amount": str(contract.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)),
+        "change_orders": str(change_orders.quantize(
+            Decimal("0.01"), rounding=ROUND_HALF_UP)),
+        "revised_contract": str(revised_contract.quantize(
+            Decimal("0.01"), rounding=ROUND_HALF_UP)),
         "estimated_total_cost": str(estimated_total_cost.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)),
         "percent_complete": str(pct_complete),
         "earned_revenue": str(earned_revenue),
