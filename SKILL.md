@@ -65,8 +65,8 @@ python3 {baseDir}/scripts/db_query.py --action status
 | `construction-update-commitment` | Update commitment |
 | `construction-list-commitments` | List commitments |
 | `construction-job-cost-summary` | Job cost vs budget summary |
-| `construction-job-profitability` | Job profitability analysis |
-| `construction-job-cost-report` | Detailed job cost report |
+| `construction-job-profitability` | Exact Decimal revenue and cost totals scoped to the job's company; refuses a different requested company |
+| `construction-job-cost-report` | Exact Decimal costs, hours, commitments and changes scoped to the job's company; refuses a different requested company |
 
 ### Estimating & Bids (13 actions)
 | Action | Description |
@@ -146,7 +146,7 @@ python3 {baseDir}/scripts/db_query.py --action status
 | `construction-get-pco` | Get PCO details |
 | `construction-list-pcos` | List PCOs |
 | `construction-approve-pco` | Approve PCO (creates CCO) |
-| `construction-add-cco` | Create contract change order |
+| `construction-add-cco` | Create a draft contract change order for a job belonging to the requested company; a supplied `--pco-id` must belong to that same job and company before any write |
 | `construction-get-cco` | Get CCO details |
 | `construction-list-ccos` | List CCOs |
 | `construction-approve-cco` | Approve CCO |
@@ -191,7 +191,7 @@ python3 {baseDir}/scripts/db_query.py --action status
 | `construction-list-earned-values` | List earned value entries |
 | `construction-calculate-ev-metrics` | Calculate CPI/SPI/EAC/ETC |
 | `construction-wip-report` | Cost-to-cost work-in-progress report (estimate = active cost-code budgets) |
-| `construction-wip-report-all` | WIP report all jobs |
+| `construction-wip-report-all` | Company WIP report for active, on-hold and substantially complete jobs, using active cost-code budgets, recorded actual costs, approved or executed change orders and submitted or approved billings, with the same cost-to-cost calculation as the single-job report |
 | `construction-cost-forecast` | Cost forecast with EAC |
 | `construction-job-status-report` | Job status report |
 | `construction-schedule-variance-report` | Schedule variance report |

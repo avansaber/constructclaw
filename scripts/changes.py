@@ -253,8 +253,19 @@ def add_cco(conn, args):
     if not getattr(args, "title", None):
         err("--title is required")
 
-    if not conn.execute(Q.from_(Table("constructclaw_job")).select(Field("id")).where(Field("id") == P()).get_sql(), (job_id,)).fetchone():
+    job = conn.execute(Q.from_(_t_job).select(_t_job.company_id)
+                       .where(_t_job.id == P()).get_sql(), (job_id,)).fetchone()
+    if not job:
         err(f"Job {job_id} not found")
+    if job["company_id"] != args.company_id:
+        err("Job must belong to the requested company")
+
+    pco_id = getattr(args, "pco_id", None)
+    if pco_id:
+        query = Q.from_(_t_pco).select(_t_pco.id).where(_t_pco.id == P())
+        query = query.where(_t_pco.job_id == P()).where(_t_pco.company_id == P())
+        if not conn.execute(query.get_sql(), (pco_id, job_id, args.company_id)).fetchone():
+            err("PCO must belong to the requested job and company")
 
     cco_id = str(uuid.uuid4())
     ns = get_next_name(conn, "constructclaw_cco", company_id=args.company_id)
@@ -267,7 +278,7 @@ def add_cco(conn, args):
     conn.execute(sql,
         (
             cco_id, ns, ns, job_id,
-            getattr(args, "pco_id", None),
+            pco_id,
             args.title,
             getattr(args, "description", None),
             cost_change,

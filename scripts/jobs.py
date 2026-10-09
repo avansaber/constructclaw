@@ -643,38 +643,47 @@ def job_cost_summary(conn, args):
 # ---------------------------------------------------------------------------
 # job-profitability -- revenue vs cost
 # ---------------------------------------------------------------------------
-def job_profitability(conn, args):
+def _job_report_job(conn, args):
+    """Resolve the owning company and check an explicit caller company."""
     job_id = getattr(args, "job_id", None)
     if not job_id:
         err("--job-id is required")
-
-    job = conn.execute(Q.from_(_t_job).select(_t_job.star).where(_t_job.id == P()).get_sql(), (job_id,)).fetchone()
+    query = Q.from_(_t_job).select(_t_job.star).where(_t_job.id == P())
+    params = [job_id]
+    company_id = getattr(args, "company_id", None)
+    if company_id:
+        query = query.where(_t_job.company_id == P())
+        params.append(company_id)
+    job = conn.execute(query.get_sql(), tuple(params)).fetchone()
     if not job:
+        if company_id:
+            err("Job not found for the requested company")
         err(f"Job {job_id} not found")
+    return job
+
+
+def _job_report_rows(conn, job, table_name, *columns):
+    """Read stored values without SQL numeric conversion or aggregation."""
+    table = Table(table_name)
+    query = (Q.from_(table).select(*(table[name] for name in columns))
+             .where(table.job_id == P()).where(table.company_id == P()))
+    return conn.execute(query.get_sql(), (job["id"], job["company_id"])).fetchall()
+
+
+def job_profitability(conn, args):
+    job = _job_report_job(conn, args)
+    job_id = job["id"]
 
     contract = _d(job["contract_amount"])
 
-    # PyPika: skipped — CAST inside COALESCE/SUM aggregate
-    # Total billed
-    billed_row = conn.execute(
-        "SELECT COALESCE(SUM(CAST(current_due AS NUMERIC)), 0) as total FROM constructclaw_progress_bill WHERE job_id = ? AND bill_status != 'rejected'",
-        (job_id,),
-    ).fetchone()
-    total_billed = _d(billed_row["total"])
-
-    # Total cost
-    cost_row = conn.execute(
-        "SELECT COALESCE(SUM(CAST(amount AS NUMERIC)), 0) as total FROM constructclaw_cost_entry WHERE job_id = ?",
-        (job_id,),
-    ).fetchone()
-    total_cost = _d(cost_row["total"])
-
-    # Change orders
-    co_row = conn.execute(
-        "SELECT COALESCE(SUM(CAST(cost_change AS NUMERIC)), 0) as total FROM constructclaw_cco WHERE job_id = ? AND cco_status IN ('approved','executed')",
-        (job_id,),
-    ).fetchone()
-    total_cos = _d(co_row["total"])
+    billed_rows = _job_report_rows(conn, job, "constructclaw_progress_bill", "current_due", "bill_status")
+    total_billed = sum((_d(row["current_due"]) for row in billed_rows
+                        if row["bill_status"] is not None and row["bill_status"] != "rejected"), Decimal("0"))
+    cost_rows = _job_report_rows(conn, job, "constructclaw_cost_entry", "amount")
+    total_cost = sum((_d(row["amount"]) for row in cost_rows), Decimal("0"))
+    co_rows = _job_report_rows(conn, job, "constructclaw_cco", "cost_change", "cco_status")
+    total_cos = sum((_d(row["cost_change"]) for row in co_rows
+                     if row["cco_status"] in ("approved", "executed")), Decimal("0"))
 
     revised_contract = contract + total_cos
     gross_profit = revised_contract - total_cost
@@ -707,6 +716,12 @@ def wip_report(conn, args):
     if not job:
         err(f"Job {job_id} not found")
 
+    ok(_wip_values(conn, job))
+
+
+def _wip_values(conn, job):
+    """Calculate exact WIP amounts for both existing report surfaces."""
+    job_id = job["id"]
     contract = _d(job["contract_amount"])
 
     q_budget = Q.from_(_t_cc).select(_t_cc.budget_amount).where(_t_cc.job_id == P()).where(_t_cc.is_active == P())
@@ -768,7 +783,7 @@ def wip_report(conn, args):
 
     over_under = (total_billed - earned_revenue).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
-    ok({
+    return {
         "job_id": job_id,
         "job_name": job["name"],
         "contract_amount": str(contract.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)),
@@ -787,7 +802,7 @@ def wip_report(conn, args):
         "billings_in_excess": str(billings_in_excess),
         "over_under_billing": str(over_under),
         "billing_status": "overbilled" if over_under > 0 else ("underbilled" if over_under < 0 else "balanced"),
-    })
+    }
 
 
 # ---------------------------------------------------------------------------

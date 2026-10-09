@@ -12,6 +12,7 @@ if importlib.util.find_spec("erpclaw_lib") is None:
     sys.path.insert(0, os.path.join(os.path.expanduser(os.environ.get("ERPCLAW_HOME", "~/.openclaw/erpclaw")), "lib"))
 from erpclaw_lib.response import ok, err, row_to_dict
 from erpclaw_lib.query import Q, P, Table, Field, fn, Order, insert_row
+from jobs import _wip_values, _job_report_job, _job_report_rows
 
 
 SKILL = "constructclaw"
@@ -27,25 +28,22 @@ def _d(val, default="0"):
 # job-cost-report -- detailed job cost report
 # ---------------------------------------------------------------------------
 def job_cost_report(conn, args):
-    job_id = getattr(args, "job_id", None)
-    if not job_id:
-        err("--job-id is required")
-
-    job = conn.execute(Q.from_(Table("constructclaw_job")).select(Table("constructclaw_job").star).where(Field("id") == P()).get_sql(), (job_id,)).fetchone()
-    if not job:
-        err(f"Job {job_id} not found")
+    job = _job_report_job(conn, args)
+    job_id = job["id"]
 
     contract = _d(job["contract_amount"])
 
-    # Cost by category
-    cat_rows = conn.execute(
-        """SELECT category, COUNT(*) as entry_count,
-                  COALESCE(SUM(CAST(amount AS NUMERIC)), 0) as total_amount,
-                  COALESCE(SUM(CAST(hours AS REAL)), 0) as total_hours
-           FROM constructclaw_cost_entry WHERE job_id = ?
-           GROUP BY category ORDER BY total_amount DESC""",
-        (job_id,),
-    ).fetchall()
+    cost_rows = _job_report_rows(conn, job, "constructclaw_cost_entry", "category", "amount", "hours")
+    categories = {}
+    for row in cost_rows:
+        category = categories.setdefault(row["category"], {
+            "category": row["category"], "entry_count": 0,
+            "total_amount": Decimal("0"), "total_hours": Decimal("0")})
+        category["entry_count"] += 1
+        category["total_amount"] += _d(row["amount"])
+        category["total_hours"] += _d(row["hours"])
+    cat_rows = sorted(categories.values(), key=lambda row: (
+        -row["total_amount"], row["category"] or ""))
 
     by_category = []
     total_cost = Decimal("0")
@@ -59,19 +57,13 @@ def job_cost_report(conn, args):
             "total_hours": str(_d(r["total_hours"]).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)),
         })
 
-    # Commitments
-    commitment_row = conn.execute(
-        "SELECT COALESCE(SUM(CAST(revised_amount AS NUMERIC)), 0) as total FROM constructclaw_commitment WHERE job_id = ? AND commitment_status NOT IN ('cancelled','closed')",
-        (job_id,),
-    ).fetchone()
-    total_committed = _d(commitment_row["total"])
-
-    # Change orders
-    co_row = conn.execute(
-        "SELECT COALESCE(SUM(CAST(cost_change AS NUMERIC)), 0) as total FROM constructclaw_cco WHERE job_id = ? AND cco_status IN ('approved','executed')",
-        (job_id,),
-    ).fetchone()
-    total_cos = _d(co_row["total"])
+    commitment_rows = _job_report_rows(conn, job, "constructclaw_commitment", "revised_amount", "commitment_status")
+    total_committed = sum((_d(row["revised_amount"]) for row in commitment_rows
+                           if row["commitment_status"] is not None
+                           and row["commitment_status"] not in ("cancelled", "closed")), Decimal("0"))
+    co_rows = _job_report_rows(conn, job, "constructclaw_cco", "cost_change", "cco_status")
+    total_cos = sum((_d(row["cost_change"]) for row in co_rows
+                     if row["cco_status"] in ("approved", "executed")), Decimal("0"))
 
     revised_contract = contract + total_cos
     variance = revised_contract - total_cost
@@ -97,10 +89,11 @@ def wip_report_all(conn, args):
     if not getattr(args, "company_id", None):
         err("--company-id is required")
 
-    jobs = conn.execute(
-        "SELECT * FROM constructclaw_job WHERE company_id = ? AND job_status IN ('active','on_hold','substantially_complete')",
-        (args.company_id,),
-    ).fetchall()
+    job = Table("constructclaw_job")
+    query = (Q.from_(job).select(job.star).where(job.company_id == P())
+             .where(job.job_status.isin([P(), P(), P()])).orderby(job.id))
+    jobs = conn.execute(query.get_sql(),
+                        (args.company_id, "active", "on_hold", "substantially_complete")).fetchall()
 
     report = []
     total_contract_all = Decimal("0")
@@ -108,37 +101,11 @@ def wip_report_all(conn, args):
     total_billed_all = Decimal("0")
 
     for j in jobs:
-        contract = _d(j["contract_amount"])
-        pct = _d(j["percent_complete"])
-        total_contract_all += contract
-
-        cost_row = conn.execute(
-            "SELECT COALESCE(SUM(CAST(amount AS NUMERIC)), 0) as total FROM constructclaw_cost_entry WHERE job_id = ?",
-            (j["id"],),
-        ).fetchone()
-        total_cost = _d(cost_row["total"])
-        total_cost_all += total_cost
-
-        billed_row = conn.execute(
-            "SELECT COALESCE(SUM(CAST(current_due AS NUMERIC)), 0) as total FROM constructclaw_progress_bill WHERE job_id = ? AND bill_status != 'rejected'",
-            (j["id"],),
-        ).fetchone()
-        total_billed = _d(billed_row["total"])
-        total_billed_all += total_billed
-
-        earned = (contract * pct / Decimal("100")).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-        over_under = total_billed - earned
-
-        report.append({
-            "job_id": j["id"],
-            "job_name": j["name"],
-            "contract_amount": str(contract.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)),
-            "percent_complete": str(pct),
-            "earned_revenue": str(earned),
-            "total_cost": str(total_cost.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)),
-            "total_billed": str(total_billed.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)),
-            "over_under_billing": str(over_under.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)),
-        })
+        row = _wip_values(conn, j)
+        total_contract_all += _d(row["revised_contract"])
+        total_cost_all += _d(row["total_cost"])
+        total_billed_all += _d(row["total_billed"])
+        report.append(row)
 
     ok({
         "company_id": args.company_id,
